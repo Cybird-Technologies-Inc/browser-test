@@ -17,13 +17,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Architecture
 
-- Everything lives in `browser-test.js`: config constants at the top, pure helpers (`round`, `phase`, `percentile`, `average`, `csvEscape`, `dnsBuckets`), then `testPage(url, runNumber)` (launches Chromium per call and collects per-request timings), then a long main section that loops `URLS` x `REPEATS`, writes the CSVs and prints summaries (`printGlobalDNS` etc.).
-- Config is currently hardcoded constants (`URLS`, `REPEATS`, `SETTLE_TIME_MS`, `SCROLL_PAGE`, `CACHE_LIKE_THRESHOLD_MS`). `PROMPT_browser-test-session.txt` describes the planned change to env-var config.
+- `lib.js` holds the pure, unit-tested logic: stats helpers, `loadConfig(env, fs)`, blocked-domain classification, `summarizeResults`, `checkThresholds`. Put new logic there so `node:test` can reach it without a browser.
+- `browser-test.js` is the Playwright part: `testPage(browser, url, run)` collects per-request timings, `testPageIsolated` gives each page its own browser plus a hard timeout, and the main block runs a worker pool (`CONCURRENCY`), writes the CSVs and `summary.json`, and sets the exit code (0 ok, 1 threshold, 2 config).
+- Config is env-var only (table in the README). New CSV columns are appended after the existing ones so downstream readers keep working.
 - Chromium uses the OS resolver, so results reflect whatever resolver the host is configured with. Running from WSL does not test LeoHat: its resolver and IP are different, and LeoHat only answers approved networks.
 
 ## Project context (from the untracked planning files)
 
-- `PLAN_and_open_points.txt` and `PROMPT_browser-test-session.txt` hold the plan for branch `feat/configurable-scheduled-runs`. PR 1 is script-only: env-var config, `RESOLVER_LABEL`, `summary.json`, `MAX_P95_DNS_MS` / `MAX_FAIL_RATE` thresholds with non-zero exit, per-URL failure handling, `BLOCKED_URLS`, `.gitignore`, README, `node:test` tests. Keep the existing CSV column names.
+- `PLAN_and_open_points.txt` and `PROMPT_browser-test-session.txt` (untracked) hold the plan. PR 1 (script-only config, thresholds, summary.json, blocked check) is implemented on `feat/configurable-scheduled-runs`.
 - PR 2 (EC2 timer, metrics push) is out of scope here. Its infra belongs in `cybird-dns-shield` tooling, not in this repo.
 - Do not touch the untracked zip/CSV files in this directory (they belong to the user). Do not push or open a PR without being told. Ask before adding a dependency or deleting a file.
 - Do not run heavy profiles against LeoHat without the user's agreement.
