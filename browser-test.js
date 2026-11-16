@@ -1,165 +1,52 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
+const path = require('path');
+const lib = require('./lib');
+const {
+  round, phase, percentile, average, hostnameFromUrl, csvEscape, dnsBuckets,
+} = lib;
 
 // ========================================================
-// CONFIG
+// CONFIG (environment variables; see README for the table)
 // ========================================================
 
-const URLS = [
-  'https://www.google.com',
-  'https://www.microsoft.com',
-  'https://www.amazon.in',
-  'https://www.linkedin.com',
-  'https://www.youtube.com',
-];
+let CONFIG;
+try {
+  CONFIG = lib.loadConfig(process.env, fs);
+} catch (error) {
+  console.error(error.message);
+  console.error('Fix the variables above and run again. Exit code 2 = configuration error.');
+  process.exit(2);
+}
 
-// IMPORTANT:
-// Keep 1 when comparing 1-DoH vs 2-DoH.
-// Restart dnsmasq before each complete test.
-const REPEATS = 1;
-
-// Allow JS/XHR/lazy resources to continue loading after page load.
-const SETTLE_TIME_MS = 3000;
-
-// Scroll to trigger lazy-loaded content.
-const SCROLL_PAGE = true;
-
-// DNS answers <= this are probably local/cache responses.
-// They are still included, but also reported separately.
-const CACHE_LIKE_THRESHOLD_MS = 2;
+const {
+  repeats: REPEATS,
+  settleTimeMs: SETTLE_TIME_MS,
+  scrollPage: SCROLL_PAGE,
+  cacheLikeThresholdMs: CACHE_LIKE_THRESHOLD_MS,
+  navTimeoutMs: NAV_TIMEOUT_MS,
+  resolverLabel: RESOLVER_LABEL,
+} = CONFIG;
 
 // ========================================================
 // HELPERS
 // ========================================================
 
-function round(value) {
-  if (
-    value === null ||
-    value === undefined ||
-    Number.isNaN(value)
-  ) {
-    return null;
-  }
-
-  return Math.round(value * 100) / 100;
-}
-
-function phase(start, end) {
-  if (
-    start === undefined ||
-    end === undefined ||
-    start === null ||
-    end === null ||
-    start < 0 ||
-    end < 0
-  ) {
-    return null;
-  }
-
-  return round(end - start);
-}
-
-function percentile(values, p) {
-  if (!values.length) return null;
-
-  const sorted = [...values].sort((a, b) => a - b);
-
-  const index =
-    (sorted.length - 1) * p;
-
-  const lower = Math.floor(index);
-  const upper = Math.ceil(index);
-
-  if (lower === upper) {
-    return round(sorted[lower]);
-  }
-
-  const result =
-    sorted[lower] +
-    (sorted[upper] - sorted[lower]) *
-      (index - lower);
-
-  return round(result);
-}
-
-function average(values) {
-  if (!values.length) return null;
-
-  return round(
-    values.reduce((a, b) => a + b, 0) /
-      values.length
-  );
-}
-
-function hostnameFromUrl(url) {
-  try {
-    return new URL(url).hostname;
-  } catch (_) {
-    return url;
-  }
-}
-
-function csvEscape(value) {
-  if (value === null || value === undefined) {
-    return '';
-  }
-
-  const str = String(value);
-
-  if (
-    str.includes(',') ||
-    str.includes('"') ||
-    str.includes('\n')
-  ) {
-    return `"${str.replace(/"/g, '""')}"`;
-  }
-
-  return str;
-}
-
 function writeCSV(filename, rows) {
   if (!rows.length) return;
 
-  const headers = Object.keys(rows[0]);
+  // Failure rows carry fewer fields; use the widest row so the
+  // existing column order is kept whichever row comes first.
+  const headers = Object.keys(
+    rows.reduce((a, b) => (Object.keys(b).length > Object.keys(a).length ? b : a))
+  );
 
   const output = [
     headers.join(','),
-    ...rows.map(row =>
-      headers
-        .map(h => csvEscape(row[h]))
-        .join(',')
-    )
+    ...rows.map(row => headers.map(h => csvEscape(row[h])).join(',')),
   ];
 
-  fs.writeFileSync(
-    filename,
-    output.join('\n')
-  );
-}
-
-function dnsBuckets(values) {
-  return {
-    lt2:
-      values.filter(v => v < 2).length,
-
-    ms2to10:
-      values.filter(v => v >= 2 && v < 10).length,
-
-    ms10to50:
-      values.filter(v => v >= 10 && v < 50).length,
-
-    ms50to100:
-      values.filter(v => v >= 50 && v < 100).length,
-
-    ms100to200:
-      values.filter(v => v >= 100 && v < 200).length,
-
-    ms200to500:
-      values.filter(v => v >= 200 && v < 500).length,
-
-    gt500:
-      values.filter(v => v >= 500).length,
-  };
+  fs.writeFileSync(filename, output.join('\n'));
 }
 
 async function scrollPage(page) {
@@ -198,13 +85,7 @@ async function scrollPage(page) {
 // TEST ONE PAGE
 // ========================================================
 
-async function testPage(url, runNumber) {
-
-  // New browser for every page minimizes Chrome-side
-  // DNS/cache/connection reuse.
-  const browser = await chromium.launch({
-    headless: true
-  });
+async function testPage(browser, url, runNumber) {
 
   const context = await browser.newContext({
     ignoreHTTPSErrors: true
@@ -410,7 +291,7 @@ async function testPage(url, runNumber) {
     mainResponse =
       await page.goto(url, {
         waitUntil: 'load',
-        timeout: 45000
+        timeout: NAV_TIMEOUT_MS
       });
 
   } catch (error) {
@@ -896,6 +777,10 @@ async function testPage(url, runNumber) {
     loadError
   };
 
+  // A page with no main response is a failed test even if Playwright
+  // did not throw, e.g. a blocked or reset connection.
+  summary.failed = !mainResponse || !!loadError;
+
   // ======================================================
   // DISPLAY RESULTS
   // ======================================================
@@ -975,10 +860,23 @@ DNS DISTRIBUTION
     );
   }
 
-  await browser.close();
+  // Block-check inputs: only the main document matters, and only
+  // when the load did not fail outright.
+  let remoteIp = null;
+  let bodyText = null;
+
+  if (mainResponse) {
+    try {
+      const addr = await mainResponse.serverAddr();
+      remoteIp = addr ? addr.ipAddress : null;
+      bodyText = (await page.content()).slice(0, 100000);
+    } catch (_) {}
+  }
 
   return {
     summary,
+    remoteIp,
+    bodyText,
     requests:
       detailedRequests
   };
@@ -1043,60 +941,104 @@ Distribution
 // MAIN
 // ========================================================
 
+// One fresh browser per page keeps DNS/connection reuse out of the numbers.
+// The hard cap covers a hung browser that ignores Playwright's own timeouts,
+// so one bad site cannot stall the whole run.
+async function testPageIsolated(url, runNumber) {
+  const hardCapMs = NAV_TIMEOUT_MS + SETTLE_TIME_MS + 30000;
+  const browser = await chromium.launch({ headless: true });
+  let timer;
+
+  try {
+    const work = testPage(browser, url, runNumber);
+    // Closing the browser on timeout makes `work` reject; swallow it.
+    work.catch(() => {});
+
+    return await Promise.race([
+      work,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`timed out after ${hardCapMs} ms`)),
+          hardCapMs
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    await browser.close().catch(() => {});
+  }
+}
+
+async function runTask({ url, run, blocked }) {
+  const timestamp = new Date().toISOString();
+  const stamp = row => ({ ...row, resolver: RESOLVER_LABEL, timestamp, kind: blocked ? 'blocked' : 'normal' });
+
+  try {
+    const result = await testPageIsolated(url, run);
+    const summary = stamp(result.summary);
+
+    if (blocked) {
+      summary.blockResult = lib.classifyBlocked(
+        { loadError: result.summary.loadError, remoteIp: result.remoteIp, bodyText: result.bodyText },
+        CONFIG
+      );
+      // A failed load is the expected outcome of a block, not a test failure.
+      summary.failed = false;
+    }
+
+    return { blocked, summary, requests: result.requests.map(stamp) };
+  } catch (error) {
+    console.error(
+      `ERROR testing ${url} (run ${run}): ${error.message}. ` +
+      'Counted as failed; check network access and the resolver, then run again.'
+    );
+    // Failure stub keeps the failed attempt visible in the CSV and counted.
+    const summary = stamp({ run, url, failed: true, loadError: error.message });
+    if (blocked) {
+      summary.blockResult = lib.classifyBlocked({ loadError: error.message }, CONFIG);
+      summary.failed = false;
+    }
+    return { blocked, summary, requests: [] };
+  }
+}
+
 (async () => {
 
-  const allSummaries = [];
-  const allRequests = [];
+  const startedAt = new Date().toISOString();
 
-  for (
-    let run = 1;
-    run <= REPEATS;
-    run++
-  ) {
-
-    for (
-      const url of URLS
-    ) {
-
-      try {
-
-        const result =
-          await testPage(
-            url,
-            run
-          );
-
-        allSummaries.push(
-          result.summary
-        );
-
-        allRequests.push(
-          ...result.requests
-        );
-
-      } catch (error) {
-
-        console.error(
-          `ERROR testing ${url}:`,
-          error.message
-        );
-      }
-    }
+  // Blocked URLs run once per repeat like the others, but are scored
+  // separately so a correct block never counts as a failure.
+  const tasks = [];
+  for (let run = 1; run <= REPEATS; run++) {
+    for (const url of CONFIG.urls) tasks.push({ url, run, blocked: false });
+    for (const url of CONFIG.blockedUrls) tasks.push({ url, run, blocked: true });
   }
+
+  // Simple worker pool: no dependency, results kept in task order.
+  const results = new Array(tasks.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(CONFIG.concurrency, tasks.length) }, async () => {
+      while (next < tasks.length) {
+        const i = next++;
+        results[i] = await runTask(tasks[i]);
+      }
+    })
+  );
+
+  const normal = results.filter(r => !r.blocked);
+  const allSummaries = results.map(r => r.summary);
+  const allRequests = results.flatMap(r => r.requests);
+  const normalRequests = normal.flatMap(r => r.requests);
 
   // ------------------------------------------------------
   // WRITE CSV FILES
   // ------------------------------------------------------
 
-  writeCSV(
-    'page-summary.csv',
-    allSummaries
-  );
+  fs.mkdirSync(CONFIG.outDir, { recursive: true });
 
-  writeCSV(
-    'request-details.csv',
-    allRequests
-  );
+  writeCSV(path.join(CONFIG.outDir, 'page-summary.csv'), allSummaries);
+  writeCSV(path.join(CONFIG.outDir, 'request-details.csv'), allRequests);
 
   // ------------------------------------------------------
   // FINAL TABLE
@@ -1115,7 +1057,7 @@ Distribution
   );
 
   console.table(
-    allSummaries.map(
+    normal.map(r => r.summary).map(
       r => ({
         URL:
           r.url,
@@ -1161,7 +1103,7 @@ Distribution
   // ------------------------------------------------------
 
   printGlobalDNS(
-    allRequests
+    normalRequests
   );
 
   // ------------------------------------------------------
@@ -1177,7 +1119,7 @@ Distribution
   );
 
   const globalSlow =
-    allRequests
+    normalRequests
       .filter(
         r =>
           r.dnsMs !== null &&
@@ -1211,10 +1153,59 @@ Distribution
     )
   );
 
+  // ------------------------------------------------------
+  // SUMMARY JSON AND THRESHOLDS
+  // ------------------------------------------------------
+
+  const stats = lib.summarizeResults({
+    pages: normal.map(r => ({ url: r.summary.url, failed: r.summary.failed })),
+    requests: normalRequests.map(r => ({ page: r.page, dnsMs: r.dnsMs })),
+    cacheLikeMs: CACHE_LIKE_THRESHOLD_MS,
+  });
+
+  const blocked = lib.summarizeBlocked(
+    results.filter(r => r.blocked).map(r => ({ url: r.summary.url, result: r.summary.blockResult }))
+  );
+
+  const violations = lib.checkThresholds(stats.global, CONFIG);
+
+  const summaryJson = {
+    resolver: RESOLVER_LABEL,
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    config: {
+      repeats: REPEATS,
+      concurrency: CONFIG.concurrency,
+      settleTimeMs: SETTLE_TIME_MS,
+      cacheLikeThresholdMs: CACHE_LIKE_THRESHOLD_MS,
+      maxP95DnsMs: CONFIG.maxP95DnsMs,
+      maxFailRate: CONFIG.maxFailRate,
+    },
+    global: stats.global,
+    perUrl: stats.perUrl,
+    blocked,
+    thresholdViolations: violations,
+    exitCode: violations.length ? 1 : 0,
+  };
+
+  fs.writeFileSync(
+    path.join(CONFIG.outDir, 'summary.json'),
+    JSON.stringify(summaryJson, null, 2)
+  );
+
   console.log(`
-Files created:
+Files created in ${CONFIG.outDir}:
 
   page-summary.csv
   request-details.csv
+  summary.json
+
+Resolver ${RESOLVER_LABEL}: ${stats.global.failed}/${stats.global.attempts} pages failed, P95 DNS ${stats.global.dns.p95 ?? '-'} ms
+Blocked-domain checks: ${blocked.blockedOk} blocked OK, ${blocked.blockFailed} block FAILED (of ${blocked.total})
 `);
+
+  for (const v of violations) console.error(`THRESHOLD: ${v}`);
+
+  // Set, do not call process.exit: lets open handles flush first.
+  process.exitCode = violations.length ? 1 : 0;
 })();
