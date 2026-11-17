@@ -22,6 +22,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Config is env-var only (table in the README). New CSV columns are appended after the existing ones so downstream readers keep working.
 - Chromium uses the OS resolver, so results reflect whatever resolver the host is configured with. Running from WSL does not test LeoHat: its resolver and IP are different, and LeoHat only answers approved networks.
 
+## Deploy (`deploy/`)
+
+- `deploy/aws/{install,update,uninstall}.sh` create and remove the AWS pieces (S3 bucket, SNS alerts, IAM, EC2 + Elastic IP, heartbeat alarm) in `ap-south-1`. All support `DRY_RUN=1`, which makes no `aws` call; tests rely on that.
+- `deploy/instance/` runs on the box: `setup.sh`, systemd units (15-minute timer), `run-and-upload.sh`, `alert.sh`. The host resolver is LeoHat with no fallback; AWS endpoints bypass it so alerts still work.
+- Real installs need `ALERT_EMAIL` and `LEOHAT_DNS_IP` in the environment (never committed). `deploy/` must be committed first: the release is `git archive HEAD`.
+- Never run a real install, update or uninstall without the user's explicit go-ahead. See `deploy/README.md`.
+- Not yet run on real AWS or Ubuntu: every `aws` call, `setup.sh`, the DNS routing and the AppArmor profile are untested.
+
 ## Project context (from the untracked planning files)
 
 - `PLAN_and_open_points.txt` and `PROMPT_browser-test-session.txt` (untracked) hold the plan. PR 1 (script-only config, thresholds, summary.json, blocked check) is implemented on `feat/configurable-scheduled-runs`.

@@ -89,6 +89,10 @@ Ready-made settings in `profiles/`. Load one with `set -a; . profiles/light.env;
 The thresholds in the profiles are starting values: tune them after baseline runs.
 Do not run the heavy profiles against LeoHat without agreement. It serves real subscribers.
 
+## Deploy
+
+A scheduled runner on AWS (EC2 timer, S3 results, SNS alerts, heartbeat alarm) is described in [deploy/README.md](deploy/README.md).
+
 ## Development setup
 
 Requires Node 22 or newer (`nvm use` reads `.nvmrc`).

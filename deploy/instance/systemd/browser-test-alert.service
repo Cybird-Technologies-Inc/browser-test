@@ -1,0 +1,13 @@
+[Unit]
+Description=Send a browser-test alert to SNS
+
+[Service]
+Type=oneshot
+User=browsertest
+Group=browsertest
+EnvironmentFile=/etc/browser-test/env
+ExecStart=/opt/browser-test/current/deploy/instance/alert.sh
+NoNewPrivileges=true
+ProtectSystem=strict
+PrivateTmp=true
+ProtectHome=true

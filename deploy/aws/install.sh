@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# Creates everything the browser-test monitoring runner needs in one AWS account.
+# Safe to run twice: every step looks up the resource by exact name or tag first.
+#
+# Required env:  ALERT_EMAIL     address that receives alerts (never stored in the repo)
+#                LEOHAT_DNS_IP   IPv4 of the LeoHat resolver (never stored in the repo)
+# Optional env:  AWS_PROFILE (Cybird-Dev), AWS_REGION (ap-south-1), INSTANCE_TYPE (t3.small),
+#                RESOLVER_LABEL (leohat), ALLOW_DIRTY=1, DRY_RUN=1 (no aws call at all)
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=deploy/aws/common.sh
+. "$HERE/common.sh"
+
+need_env ALERT_EMAIL "Set it to the address that should receive alerts, for example: export ALERT_EMAIL=you@your-domain"
+need_env LEOHAT_DNS_IP "Set it to the IPv4 address of the LeoHat resolver, for example: export LEOHAT_DNS_IP=<ip>"
+if ! printf '%s' "$LEOHAT_DNS_IP" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+  die "LEOHAT_DNS_IP must be a plain IPv4 address."
+fi
+case "$ALERT_EMAIL" in *@*.*) ;; *) die "ALERT_EMAIL does not look like an email address." ;; esac
+
+INSTANCE_TYPE="${INSTANCE_TYPE:-t3.small}"
+AMI_PARAM="/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+TMPFILES=()
+cleanup() { [ "${#TMPFILES[@]}" -gt 0 ] && rm -f "${TMPFILES[@]}"; return 0; }
+trap cleanup EXIT
+
+resolve_account
+TOPIC_ARN="arn:aws:sns:${AWS_REGION}:${ACCOUNT_ID}:${TOPIC_NAME}"
+TAG_LIST="Key=${TAG_PROJECT_KEY},Value=${TAG_PROJECT_VAL} Key=${TAG_MANAGED_KEY},Value=${TAG_MANAGED_VAL}"
+# shellcheck disable=SC2206
+TAGS=($TAG_LIST)
+
+step_bucket() {
+  info "Step 1: S3 bucket $BUCKET"
+  if ! is_dry && aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+    info "Bucket exists, re-applying settings."
+  else
+    mut "create private bucket $BUCKET in $AWS_REGION" || true
+    if ! is_dry; then
+      aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION" \
+        --create-bucket-configuration "LocationConstraint=$AWS_REGION" >/dev/null
+    fi
+  fi
+  mut "block all public access, enable SSE-S3, tag the bucket" || true
+  if ! is_dry; then
+    aws s3api put-public-access-block --bucket "$BUCKET" --public-access-block-configuration \
+      BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+    aws s3api put-bucket-encryption --bucket "$BUCKET" --server-side-encryption-configuration \
+      '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+    aws s3api put-bucket-tagging --bucket "$BUCKET" --tagging \
+      "TagSet=[{Key=${TAG_PROJECT_KEY},Value=${TAG_PROJECT_VAL}},{Key=${TAG_MANAGED_KEY},Value=${TAG_MANAGED_VAL}}]"
+  fi
+  # Versioning stays off. The noncurrent rule is a no-op until someone enables versioning.
+  mut "lifecycle: expire results/ after 90 days, releases/ noncurrent versions after 30 days" || return 0
+  aws s3api put-bucket-lifecycle-configuration --bucket "$BUCKET" --lifecycle-configuration '{
+    "Rules": [
+      {"ID":"expire-results-90d","Status":"Enabled","Filter":{"Prefix":"results/"},
+       "Expiration":{"Days":90},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":7}},
+      {"ID":"expire-old-releases","Status":"Enabled","Filter":{"Prefix":"releases/"},
+       "NoncurrentVersionExpiration":{"NoncurrentDays":30},"AbortIncompleteMultipartUpload":{"DaysAfterInitiation":7}}
+    ]}'
+}
+
+step_sns() {
+  info "Step 2: SNS topic $TOPIC_NAME and email subscription"
+  mut "create topic $TOPIC_NAME (create-topic returns the existing one if present) and tag it" || true
+  if ! is_dry; then
+    aws sns create-topic --name "$TOPIC_NAME" --query TopicArn --output text >/dev/null
+    aws sns tag-resource --resource-arn "$TOPIC_ARN" --tags "${TAGS[@]}"
+  fi
+  local existing=""
+  if ! is_dry; then
+    existing="$(aws sns list-subscriptions-by-topic --topic-arn "$TOPIC_ARN" \
+      --query "Subscriptions[?Endpoint=='${ALERT_EMAIL}'].SubscriptionArn" --output text)"
+  fi
+  if [ -n "$existing" ] && [ "$existing" != "None" ]; then
+    info "ALERT_EMAIL is already subscribed (state: $([ "$existing" = "PendingConfirmation" ] && echo pending || echo confirmed))."
+    return 0
+  fi
+  mut "subscribe ALERT_EMAIL to $TOPIC_ARN (a confirmation mail will be sent)" || return 0
+  aws sns subscribe --topic-arn "$TOPIC_ARN" --protocol email --notification-endpoint "$ALERT_EMAIL" >/dev/null
+  warn "ACTION NEEDED: open the confirmation mail sent to ALERT_EMAIL and click 'Confirm subscription'. No alert is delivered before that."
+}
+
+step_iam() {
+  info "Step 3: IAM role $ROLE_NAME and instance profile $PROFILE_NAME"
+  local created=0
+  mut "create role $ROLE_NAME (trust: ec2.amazonaws.com) if missing" || true
+  if ! is_dry; then
+    if ! aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+      aws iam create-role --role-name "$ROLE_NAME" --tags "${TAGS[@]}" \
+        --assume-role-policy-document '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Principal":{"Service":"ec2.amazonaws.com"},"Action":"sts:AssumeRole"}]}' >/dev/null
+      created=1
+    fi
+  fi
+  mut "attach AmazonSSMManagedInstanceCore (shell access without SSH)" || true
+  if ! is_dry; then
+    aws iam attach-role-policy --role-name "$ROLE_NAME" --policy-arn arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+  fi
+  # Least privilege: each action is limited to one prefix or one ARN. PutMetricData cannot be
+  # limited by resource, so it carries a namespace condition instead.
+  local policy
+  policy='{
+  "Version": "2012-10-17",
+  "Statement": [
+    {"Sid": "PutResults", "Effect": "Allow", "Action": "s3:PutObject",
+     "Resource": "arn:aws:s3:::'"$BUCKET"'/results/*"},
+    {"Sid": "GetReleases", "Effect": "Allow", "Action": "s3:GetObject",
+     "Resource": "arn:aws:s3:::'"$BUCKET"'/releases/*"},
+    {"Sid": "PublishAlerts", "Effect": "Allow", "Action": "sns:Publish",
+     "Resource": "'"$TOPIC_ARN"'"},
+    {"Sid": "Heartbeat", "Effect": "Allow", "Action": "cloudwatch:PutMetricData",
+     "Resource": "*",
+     "Condition": {"StringEquals": {"cloudwatch:namespace": "'"$METRIC_NAMESPACE"'"}}}
+  ]
+}'
+  mut "put inline policy browser-test-runtime on the role (S3 results/ put, releases/ get, SNS publish, namespaced metric)" || true
+  if ! is_dry; then
+    aws iam put-role-policy --role-name "$ROLE_NAME" --policy-name browser-test-runtime --policy-document "$policy"
+  fi
+  mut "create instance profile $PROFILE_NAME and add the role" || return 0
+  if ! aws iam get-instance-profile --instance-profile-name "$PROFILE_NAME" >/dev/null 2>&1; then
+    aws iam create-instance-profile --instance-profile-name "$PROFILE_NAME" --tags "${TAGS[@]}" >/dev/null
+    created=1
+  fi
+  if [ "$(aws iam get-instance-profile --instance-profile-name "$PROFILE_NAME" --query 'length(InstanceProfile.Roles)' --output text)" = "0" ]; then
+    aws iam add-role-to-instance-profile --instance-profile-name "$PROFILE_NAME" --role-name "$ROLE_NAME"
+    created=1
+  fi
+  # IAM is eventually consistent: a new profile is not always usable by EC2 at once.
+  if [ "$created" = "1" ]; then info "Waiting 15 s for IAM to propagate."; sleep 15; fi
+}
+
+step_sg() {
+  info "Step 4: security group $SG_NAME (no inbound rules)"
+  SG_ID="sg-dryrun"
+  mut "look up the default VPC, create security group $SG_NAME with NO inbound rules (egress stays open for DNS, HTTPS)" || return 0
+  local vpc
+  vpc="$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)"
+  [ -n "$vpc" ] && [ "$vpc" != "None" ] || die "No default VPC in $AWS_REGION. Create one (aws ec2 create-default-vpc) or extend this script."
+  SG_ID="$(aws ec2 describe-security-groups --filters "${TAG_FILTERS[@]}" "Name=vpc-id,Values=$vpc" --query 'SecurityGroups[0].GroupId' --output text)"
+  if [ "$SG_ID" = "None" ] || [ -z "$SG_ID" ]; then
+    SG_ID="$(aws ec2 create-security-group --group-name "$SG_NAME" --description "browser-test runner: no inbound" \
+      --vpc-id "$vpc" --tag-specifications "ResourceType=security-group,Tags=[{Key=Name,Value=$SG_NAME},{Key=${TAG_PROJECT_KEY},Value=${TAG_PROJECT_VAL}},{Key=${TAG_MANAGED_KEY},Value=${TAG_MANAGED_VAL}}]" \
+      --query GroupId --output text)"
+  fi
+  info "Security group: $SG_ID"
+}
+
+write_user_data() {
+  local f="$1"
+  # The setup runs as root on first boot. Files holding values are written here so that
+  # no value appears on a command line. user-data is readable by principals that may call
+  # ec2:DescribeInstanceAttribute: the DNS IP is not a secret, but keep that scope tight.
+  cat >"$f" <<UD
+#!/usr/bin/env bash
+set -euo pipefail
+exec > >(tee -a /var/log/browser-test-userdata.log) 2>&1
+install -d -m 0755 /etc/browser-test
+install -m 0600 /dev/null /etc/browser-test/leohat-dns
+printf '%s\n' '${LEOHAT_DNS_IP}' > /etc/browser-test/leohat-dns
+printf '%s\n' '${BUCKET}' > /etc/browser-test/bucket
+printf '%s\n' '${TOPIC_ARN}' > /etc/browser-test/sns-topic-arn
+printf '%s\n' '${AWS_REGION}' > /etc/browser-test/region
+chmod 0644 /etc/browser-test/bucket /etc/browser-test/sns-topic-arn /etc/browser-test/region
+export DEBIAN_FRONTEND=noninteractive
+export AWS_DEFAULT_REGION='${AWS_REGION}'
+apt-get update -y
+apt-get install -y curl unzip ca-certificates
+# Ubuntu 24.04 has no apt awscli package (removed), and the snap is avoided on purpose:
+# the official v2 installer is the supported route.
+if ! command -v aws >/dev/null 2>&1; then
+  curl -fsSL https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o /tmp/awscliv2.zip
+  unzip -q /tmp/awscliv2.zip -d /tmp && /tmp/aws/install && rm -rf /tmp/aws /tmp/awscliv2.zip
+fi
+$(fetch_and_setup_cmd "$BUCKET" "$RELEASE_SHA")
+UD
+}
+
+step_instance() {
+  info "Step 5: release package and EC2 instance"
+  package_release
+  INSTANCE_ID="i-dryrun"
+  local existing=""
+  if ! is_dry; then existing="$(find_instance)"; fi
+  if [ -n "$existing" ] && [ "$existing" != "None" ]; then
+    INSTANCE_ID="$existing"
+    warn "Instance $INSTANCE_ID already exists, not launching another. To deploy a new version run deploy/aws/update.sh."
+    return 0
+  fi
+  local ud ami
+  ud="$(mktemp)"; TMPFILES+=("$ud"); chmod 600 "$ud"
+  write_user_data "$ud"
+  mut "resolve Ubuntu 24.04 AMI from SSM parameter $AMI_PARAM" || true
+  mut "launch ONE $INSTANCE_TYPE instance: IMDSv2 required, hop limit 1, encrypted gp3 20 GB root, no key pair, profile $PROFILE_NAME, security group $SG_NAME" || return 0
+  ami="$(aws ssm get-parameter --name "$AMI_PARAM" --query Parameter.Value --output text)"
+  INSTANCE_ID="$(aws ec2 run-instances --image-id "$ami" --instance-type "$INSTANCE_TYPE" --count 1 \
+    --iam-instance-profile "Name=$PROFILE_NAME" --security-group-ids "$SG_ID" \
+    --metadata-options HttpTokens=required,HttpPutResponseHopLimit=1,HttpEndpoint=enabled \
+    --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=20,VolumeType=gp3,Encrypted=true,DeleteOnTermination=true}' \
+    --user-data "file://$ud" \
+    --tag-specifications \
+      "ResourceType=instance,Tags=[{Key=Name,Value=$PREFIX},{Key=${TAG_PROJECT_KEY},Value=${TAG_PROJECT_VAL}},{Key=${TAG_MANAGED_KEY},Value=${TAG_MANAGED_VAL}}]" \
+      "ResourceType=volume,Tags=[{Key=Name,Value=$PREFIX},{Key=${TAG_PROJECT_KEY},Value=${TAG_PROJECT_VAL}},{Key=${TAG_MANAGED_KEY},Value=${TAG_MANAGED_VAL}}]" \
+    --query 'Instances[0].InstanceId' --output text)"
+  info "Launched $INSTANCE_ID, waiting until it runs."
+  aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
+}
+
+step_eip() {
+  info "Step 6: Elastic IP"
+  EIP="<elastic-ip-after-real-run>"
+  mut "reuse a tagged Elastic IP or allocate one, then associate it with the instance" || return 0
+  local alloc
+  alloc="$(aws ec2 describe-addresses --filters "${TAG_FILTERS[@]}" --query 'Addresses[0].AllocationId' --output text)"
+  if [ -z "$alloc" ] || [ "$alloc" = "None" ]; then
+    alloc="$(aws ec2 allocate-address --domain vpc \
+      --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Name,Value=$PREFIX},{Key=${TAG_PROJECT_KEY},Value=${TAG_PROJECT_VAL}},{Key=${TAG_MANAGED_KEY},Value=${TAG_MANAGED_VAL}}]" \
+      --query AllocationId --output text)"
+  fi
+  # associate-address with the same instance is a no-op, so this is safe to repeat.
+  aws ec2 associate-address --allocation-id "$alloc" --instance-id "$INSTANCE_ID" >/dev/null
+  EIP="$(aws ec2 describe-addresses --allocation-ids "$alloc" --query 'Addresses[0].PublicIp' --output text)"
+}
+
+step_alarm() {
+  info "Step 7: heartbeat alarm $ALARM_NAME"
+  # Missing data counts as breaching: a dead timer sends no metric, and that must alert.
+  mut "put alarm $ALARM_NAME: $METRIC_NAMESPACE/$METRIC_NAME Resolver=$RESOLVER_LABEL, period 900 s x 3, missing data = breaching, action = SNS topic" || return 0
+  aws cloudwatch put-metric-alarm --alarm-name "$ALARM_NAME" \
+    --alarm-description "No browser-test run completed in 45 minutes (timer or instance is down)" \
+    --namespace "$METRIC_NAMESPACE" --metric-name "$METRIC_NAME" --dimensions "Name=Resolver,Value=$RESOLVER_LABEL" \
+    --statistic Sum --period 900 --evaluation-periods 3 --threshold 1 \
+    --comparison-operator LessThanThreshold --treat-missing-data breaching \
+    --alarm-actions "$TOPIC_ARN" --ok-actions "$TOPIC_ARN" \
+    --tags "${TAGS[@]}"
+}
+
+step_bucket
+step_sns
+step_iam
+step_sg
+step_instance
+step_eip
+step_alarm
+
+cat >&2 <<OUT
+
+Done$(is_dry && echo " (DRY_RUN: nothing was created)").
+  Elastic IP : ${EIP:-n/a}
+               -> Add this IP to the LeoHat approved networks. Until then LeoHat will not answer and runs will fail.
+  Instance   : ${INSTANCE_ID:-n/a}   (first boot takes about 5 to 10 minutes)
+  Bucket     : ${BUCKET}
+  Shell      : aws ssm start-session --target ${INSTANCE_ID:-<instance-id>} --profile ${AWS_PROFILE} --region ${AWS_REGION}
+  Next       : click the confirmation link in the SNS mail sent to ALERT_EMAIL.
+  Rollback   : deploy/aws/uninstall.sh   (set PURGE_BUCKET=1 to delete the bucket too)
+OUT

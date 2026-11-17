@@ -1,0 +1,22 @@
+[Unit]
+Description=browser-test DNS page-load run
+After=network-online.target
+Wants=network-online.target
+OnFailure=browser-test-alert.service
+
+[Service]
+Type=oneshot
+User=browsertest
+Group=browsertest
+EnvironmentFile=/etc/browser-test/env
+Environment=HOME=/var/lib/browser-test
+ExecStart=/opt/browser-test/current/deploy/instance/run-and-upload.sh
+TimeoutStartSec=20min
+# Hardening: the run needs to write only its state directory.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/browser-test
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
