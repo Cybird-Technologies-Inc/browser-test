@@ -32,7 +32,7 @@ LeoHat was only the first example resolver. Code, config defaults and docs must 
 - `deploy/instance/` runs on the box: `setup.sh`, systemd units (15-minute timer), `run-all.sh`, `alert.sh`. One runner tests many ISP resolvers in turn: one `/etc/browser-test/targets/<label>.env` per ISP, added with `deploy/aws/add-target.sh <label> <ip>`. The host resolver is switched per target with no fallback; AWS endpoints bypass it so alerts still work. All ISPs approve the same Elastic IP.
 - Real installs need `ALERT_EMAIL` and `RESOLVER_DNS_IP` in the environment (never committed). `deploy/` must be committed first: the release is `git archive HEAD`.
 - Never run a real install, update or uninstall without the user's explicit go-ahead. See `deploy/README.md`.
-- Not yet run on real AWS or Ubuntu: every `aws` call, `setup.sh`, the DNS routing and the AppArmor profile are untested.
+- Run on real AWS (ap-south-1): install, update, add-target, the S3 upload under `results/resolver=<label>/` and `latest.json` work. Still unverified: a cycle where the resolver answers (needs the Elastic IP approved), the AppArmor profile with Chromium, `remove-target.sh` over SSM, and the generic alert mode.
 
 ## Project context (from the untracked planning files)
 
