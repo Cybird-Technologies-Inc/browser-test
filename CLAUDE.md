@@ -29,7 +29,7 @@ LeoHat was only the first example resolver. Code, config defaults and docs must 
 ## Deploy (`deploy/`)
 
 - `deploy/aws/{install,update,uninstall}.sh` create and remove the AWS pieces (S3 bucket, SNS alerts, IAM, EC2 + Elastic IP, heartbeat alarm) in `ap-south-1`. All support `DRY_RUN=1`, which makes no `aws` call; tests rely on that.
-- `deploy/instance/` runs on the box: `setup.sh`, systemd units (15-minute timer), `run-and-upload.sh`, `alert.sh`. The host resolver is the resolver with no fallback; AWS endpoints bypass it so alerts still work.
+- `deploy/instance/` runs on the box: `setup.sh`, systemd units (15-minute timer), `run-all.sh`, `alert.sh`. One runner tests many ISP resolvers in turn: one `/etc/browser-test/targets/<label>.env` per ISP, added with `deploy/aws/add-target.sh <label> <ip>`. The host resolver is switched per target with no fallback; AWS endpoints bypass it so alerts still work. All ISPs approve the same Elastic IP.
 - Real installs need `ALERT_EMAIL` and `RESOLVER_DNS_IP` in the environment (never committed). `deploy/` must be committed first: the release is `git archive HEAD`.
 - Never run a real install, update or uninstall without the user's explicit go-ahead. See `deploy/README.md`.
 - Not yet run on real AWS or Ubuntu: every `aws` call, `setup.sh`, the DNS routing and the AppArmor profile are untested.
