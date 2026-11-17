@@ -86,7 +86,7 @@ install -d -o "$RUN_USER" -g "$RUN_USER" -m 0750 "$STATE_DIR" "$STATE_DIR/out"
 
 # --- 4. App: dependencies, browser, current link ---
 log INFO "Installing app dependencies in $RELEASE_DIR"
-(cd "$RELEASE_DIR" && npm ci --no-audit --no-fund)
+(cd "$RELEASE_DIR" && npm ci --omit=dev --no-audit --no-fund)
 mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"
 (cd "$RELEASE_DIR" && npx playwright install --with-deps chromium)
 chmod -R a+rX "$PLAYWRIGHT_BROWSERS_PATH" "$RELEASE_DIR"
