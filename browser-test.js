@@ -777,9 +777,9 @@ async function testPage(browser, url, runNumber) {
     loadError
   };
 
-  // A page with no main response is a failed test even if Playwright
-  // did not throw, e.g. a blocked or reset connection.
-  summary.failed = !mainResponse || !!loadError;
+  // A page with no main response, or an HTTP 4xx/5xx, is a failed test
+  // even if Playwright did not throw.
+  summary.failed = !mainResponse || !!loadError || lib.isHttpFailure(mainResponse.status());
 
   // ======================================================
   // DISPLAY RESULTS
@@ -947,24 +947,14 @@ Distribution
 async function testPageIsolated(url, runNumber) {
   const hardCapMs = NAV_TIMEOUT_MS + SETTLE_TIME_MS + 30000;
   const browser = await chromium.launch({ headless: true });
-  let timer;
 
   try {
     const work = testPage(browser, url, runNumber);
     // Closing the browser on timeout makes `work` reject; swallow it.
     work.catch(() => {});
 
-    return await Promise.race([
-      work,
-      new Promise((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`timed out after ${hardCapMs} ms`)),
-          hardCapMs
-        );
-      }),
-    ]);
+    return await lib.withTimeout(work, hardCapMs, `timed out after ${hardCapMs} ms`);
   } finally {
-    clearTimeout(timer);
     await browser.close().catch(() => {});
   }
 }
@@ -1167,7 +1157,7 @@ async function runTask({ url, run, blocked }) {
     results.filter(r => r.blocked).map(r => ({ url: r.summary.url, result: r.summary.blockResult }))
   );
 
-  const violations = lib.checkThresholds(stats.global, CONFIG);
+  const violations = lib.checkThresholds(stats.global, CONFIG, blocked);
 
   const summaryJson = {
     resolver: RESOLVER_LABEL,
@@ -1180,6 +1170,7 @@ async function runTask({ url, run, blocked }) {
       cacheLikeThresholdMs: CACHE_LIKE_THRESHOLD_MS,
       maxP95DnsMs: CONFIG.maxP95DnsMs,
       maxFailRate: CONFIG.maxFailRate,
+      maxBlockFailed: CONFIG.maxBlockFailed,
     },
     global: stats.global,
     perUrl: stats.perUrl,

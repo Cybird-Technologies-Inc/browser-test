@@ -146,6 +146,8 @@ function loadConfig(env, fsLike) {
     // null means "no limit": thresholds are opt-in so existing runs keep exiting 0.
     maxP95DnsMs: num('MAX_P95_DNS_MS', null, { min: 0 }),
     maxFailRate: num('MAX_FAIL_RATE', null, { min: 0, max: 1 }),
+    // Recommended 0 whenever BLOCKED_URLS is set: one answered blocked domain is an alert.
+    maxBlockFailed: num('MAX_BLOCK_FAILED', null, { min: 0, integer: true }),
   };
 
   if (errors.length) {
@@ -220,7 +222,7 @@ function summarizeBlocked(results) {
 }
 
 // Returns one message per exceeded limit; empty means pass.
-function checkThresholds(global, { maxP95DnsMs = null, maxFailRate = null } = {}) {
+function checkThresholds(global, { maxP95DnsMs = null, maxFailRate = null, maxBlockFailed = null } = {}, blocked = null) {
   const violations = [];
   if (maxP95DnsMs !== null && global.dns.p95 !== null && global.dns.p95 > maxP95DnsMs) {
     violations.push(`MAX_P95_DNS_MS exceeded: P95 DNS ${global.dns.p95} ms > limit ${maxP95DnsMs} ms`);
@@ -230,10 +232,30 @@ function checkThresholds(global, { maxP95DnsMs = null, maxFailRate = null } = {}
       `MAX_FAIL_RATE exceeded: failure rate ${global.failureRate} (${global.failed}/${global.attempts}) > limit ${maxFailRate}`
     );
   }
+  if (maxBlockFailed !== null && blocked && blocked.blockFailed > maxBlockFailed) {
+    violations.push(
+      `MAX_BLOCK_FAILED exceeded: ${blocked.blockFailed} of ${blocked.total} blocked domains were answered > limit ${maxBlockFailed}`
+    );
+  }
   return violations;
+}
+
+// Same convention as common uptime monitors: 4xx and 5xx are failures.
+function isHttpFailure(status) {
+  return typeof status === 'number' && status >= 400;
+}
+
+// Hard cap for a hung browser that ignores Playwright's own timeouts.
+// Returns the promise's result, or rejects after ms; the timer is always cleared.
+function withTimeout(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 module.exports = {
   DEFAULT_URLS, round, phase, percentile, average, hostnameFromUrl, csvEscape, dnsBuckets,
-  loadConfig, parseUrlList, classifyBlocked, rate, dnsStats, summarizeResults, summarizeBlocked, checkThresholds,
+  loadConfig, parseUrlList, classifyBlocked, rate, dnsStats, summarizeResults, summarizeBlocked, checkThresholds, isHttpFailure, withTimeout,
 };

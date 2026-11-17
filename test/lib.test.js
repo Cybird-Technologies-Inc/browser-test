@@ -77,6 +77,29 @@ test('checkThresholds: pass, each limit alone, both, unset', () => {
   assert.deepStrictEqual(lib.checkThresholds({ ...g, dns: { p95: null } }, { maxP95DnsMs: 1 }), []);
 });
 
+test('checkThresholds: MAX_BLOCK_FAILED', () => {
+  const g = { attempts: 1, failed: 0, failureRate: 0, dns: { p95: 1 } };
+  const b = { total: 3, blockedOk: 2, blockFailed: 1 };
+  assert.match(lib.checkThresholds(g, { maxBlockFailed: 0 }, b)[0], /MAX_BLOCK_FAILED/);
+  assert.deepStrictEqual(lib.checkThresholds(g, { maxBlockFailed: 1 }, b), []);
+  assert.deepStrictEqual(lib.checkThresholds(g, {}, b), []); // unset = report only
+  assert.deepStrictEqual(lib.checkThresholds(g, { maxBlockFailed: 0 }, null), []);
+});
+
+test('isHttpFailure: 4xx and 5xx fail, 2xx/3xx and no status do not', () => {
+  assert.strictEqual(lib.isHttpFailure(404), true);
+  assert.strictEqual(lib.isHttpFailure(503), true);
+  assert.strictEqual(lib.isHttpFailure(200), false);
+  assert.strictEqual(lib.isHttpFailure(302), false);
+  assert.strictEqual(lib.isHttpFailure(null), false);
+});
+
+test('withTimeout: resolves in time, rejects when hung, passes errors through', async () => {
+  assert.strictEqual(await lib.withTimeout(Promise.resolve(1), 1000, 'x'), 1);
+  await assert.rejects(lib.withTimeout(new Promise(() => {}), 20, 'timed out'), /timed out/);
+  await assert.rejects(lib.withTimeout(Promise.reject(new Error('boom')), 1000, 'x'), /boom/);
+});
+
 test('csvEscape: commas, quotes, newlines, null', () => {
   assert.strictEqual(lib.csvEscape('a,"b"\n'), '"a,""b""\n"');
   assert.strictEqual(lib.csvEscape(null), '');
