@@ -114,27 +114,43 @@ function parseUrlList(raw, name, errors, fsLike) {
   return items;
 }
 
+// Entries are `category=name` or, in files, `category name` (the format of the shield's
+// client-test domains.txt). Name = domain or URL; no category means "uncategorized".
+// Same sources as URLS: a comma list, or a file with one entry per line and # comments.
+function parseBlockedList(raw, errors, fsLike) {
+  const lines = fsLike.existsSync(raw)
+    ? fsLike.readFileSync(raw, 'utf8').split('\n').map(l => l.replace(/#.*$/, '').trim())
+    : raw.split(',').map(x => x.trim());
+
+  const entries = [];
+  for (const item of lines.filter(Boolean)) {
+    const m = item.match(/^([A-Za-z0-9_-]+)(?:=|\s+)(.+)$/);
+    const category = (m ? m[1] : 'uncategorized').toLowerCase();
+    const name = m ? m[2] : item;
+    let host = null;
+    try {
+      host = /^[a-z][a-z0-9+.-]*:\/\//i.test(name) ? new URL(name).hostname : new URL(`https://${name}`).hostname;
+    } catch (_) { /* reported below */ }
+    if (!host || !/^[a-z0-9.-]+$/i.test(host)) {
+      errors.push(`BLOCKED_URLS has an invalid domain "${name}". Use category=domain.`);
+    } else {
+      entries.push({ category, host: host.toLowerCase() });
+    }
+  }
+  return entries;
+}
+
 function loadConfig(env, fsLike) {
   const errors = [];
   const num = (key, fallback, opts) => parseNumber(env[key], fallback, key, errors, opts);
 
   const urls = env.URLS ? parseUrlList(env.URLS, 'URLS', errors, fsLike) : [...DEFAULT_URLS];
-  const blockedUrls = env.BLOCKED_URLS ? parseUrlList(env.BLOCKED_URLS, 'BLOCKED_URLS', errors, fsLike) : [];
-
-  let blockPagePattern = null;
-  if (env.BLOCK_PAGE_PATTERN) {
-    try {
-      blockPagePattern = new RegExp(env.BLOCK_PAGE_PATTERN, 'i');
-    } catch (e) {
-      errors.push(`BLOCK_PAGE_PATTERN is not a valid regular expression (${e.message}).`);
-    }
-  }
+  const blocked = env.BLOCKED_URLS ? parseBlockedList(env.BLOCKED_URLS, errors, fsLike) : [];
 
   const config = {
     urls,
-    blockedUrls,
+    blocked,
     blockPageIps: (env.BLOCK_PAGE_IPS || '').split(',').map(s => s.trim()).filter(Boolean),
-    blockPagePattern,
     repeats: num('REPEATS', 1, { min: 1, integer: true }),
     concurrency: num('CONCURRENCY', 1, { min: 1, max: 50, integer: true }),
     settleTimeMs: num('SETTLE_TIME_MS', 3000, { min: 0, integer: true }),
@@ -159,16 +175,21 @@ function loadConfig(env, fsLike) {
 }
 
 // ------------------------------------------------------------------
-// Blocked-domain check
+// Blocked-domain check (DNS only)
 // ------------------------------------------------------------------
 
-// NXDOMAIN is the resolver's own block answer. A block page is only
-// recognisable if the operator tells us its IPs or text, so we do not guess.
-function classifyBlocked({ loadError, remoteIp, bodyText }, { blockPageIps = [], blockPagePattern = null } = {}) {
-  if (loadError && /ERR_NAME_NOT_RESOLVED|NXDOMAIN/i.test(loadError)) return 'blocked_ok';
-  if (remoteIp && blockPageIps.includes(remoteIp)) return 'blocked_ok';
-  if (blockPagePattern && bodyText && blockPagePattern.test(bodyText)) return 'blocked_ok';
-  return 'block_failed';
+// Blocked names are looked up, never opened: feed domains are malware and
+// phishing, and a browser must not visit them. A block shows up either as
+// NXDOMAIN or as an answer that is only the resolver's sinkhole address.
+// Any other answer is a real one, so the block failed. A resolver error
+// proves nothing, so it fails the check too (and the detail says why).
+function classifyBlocked({ addresses = [], errorCode = null }, { blockPageIps = [] } = {}) {
+  if (errorCode === 'ENOTFOUND') return { result: 'blocked_ok', detail: 'NXDOMAIN' };
+  if (errorCode) return { result: 'block_failed', detail: `resolver error ${errorCode}` };
+  if (addresses.length && addresses.every(a => blockPageIps.includes(a))) {
+    return { result: 'blocked_ok', detail: 'sinkhole' };
+  }
+  return { result: 'block_failed', detail: `real answer ${addresses.join(' ') || 'none'}` };
 }
 
 // ------------------------------------------------------------------
@@ -211,13 +232,21 @@ function summarizeResults({ pages, requests, cacheLikeMs }) {
   return { global: group(pages, requests), perUrl };
 }
 
+// results: [{host, category, result}]. Per category so a feed that stops
+// blocking (for example phishing) is visible even when malware still works.
 function summarizeBlocked(results) {
-  const blockedOk = results.filter(r => r.result === 'blocked_ok').length;
+  const tally = rs => {
+    const blockedOk = rs.filter(r => r.result === 'blocked_ok').length;
+    return { total: rs.length, blockedOk, blockFailed: rs.length - blockedOk };
+  };
+  const perCategory = {};
+  for (const c of new Set(results.map(r => r.category))) {
+    perCategory[c] = tally(results.filter(r => r.category === c));
+  }
   return {
-    total: results.length,
-    blockedOk,
-    blockFailed: results.length - blockedOk,
-    perUrl: Object.fromEntries(results.map(r => [r.url, r.result])),
+    ...tally(results),
+    perCategory,
+    failedDomains: [...new Set(results.filter(r => r.result !== 'blocked_ok').map(r => r.host))],
   };
 }
 
@@ -256,6 +285,6 @@ function withTimeout(promise, ms, message) {
 }
 
 module.exports = {
-  DEFAULT_URLS, round, phase, percentile, average, hostnameFromUrl, csvEscape, dnsBuckets,
+  DEFAULT_URLS, parseBlockedList, round, phase, percentile, average, hostnameFromUrl, csvEscape, dnsBuckets,
   loadConfig, parseUrlList, classifyBlocked, rate, dnsStats, summarizeResults, summarizeBlocked, checkThresholds, isHttpFailure, withTimeout,
 };

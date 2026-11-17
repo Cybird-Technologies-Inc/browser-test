@@ -29,29 +29,42 @@ Every variable is optional. Defaults equal the old hardcoded values.
 | `RESOLVER_LABEL` | `unlabeled` | Label written to every CSV row and `summary.json` |
 | `MAX_P95_DNS_MS` | unset | Fail if the global P95 DNS (ms) is above this |
 | `MAX_FAIL_RATE` | unset | Fail if failed pages / attempts (0 to 1) is above this |
-| `BLOCKED_URLS` | unset | Same format as `URLS`. Domains the resolver should block |
+| `BLOCKED_URLS` | unset | Domains the resolver should block, as `category=domain` entries (comma list, or a file). See below |
 | `MAX_BLOCK_FAILED` | unset | Fail if more than this many blocked domains were answered. Use `0` whenever `BLOCKED_URLS` is set |
-| `BLOCK_PAGE_IPS` | unset | Comma list of IPs your block page is served from |
-| `BLOCK_PAGE_PATTERN` | unset | Case-insensitive regex matched against the page text of a block page |
+| `BLOCK_PAGE_IPS` | unset | Comma list of the resolver's sinkhole IPs (list both IPv4 and IPv6 if it answers both) |
 
 A page counts as **failed** if it throws, times out, gets no main response, or
 answers with HTTP 4xx or 5xx (the convention of common uptime monitors). Some
 sites answer headless browsers with 4xx (for example LinkedIn); drop such sites
 from `URLS` or the failure rate will never reach 0.
 
-### Blocked domains
+### Blocked domains (feed categories)
 
-For each `BLOCKED_URLS` entry: NXDOMAIN, an answer from `BLOCK_PAGE_IPS`, or page
-text matching `BLOCK_PAGE_PATTERN` is **blocked OK**. Anything else, including a
-real page, is **block FAILED**. LeoHat has no block page defined yet, so only NXDOMAIN counts. Without `BLOCK_PAGE_IPS` or `BLOCK_PAGE_PATTERN`
-a block page cannot be recognised. Blocked URLs never count in the DNS
-percentiles or the failure rate.
+`BLOCKED_URLS` checks that each feed category really blocks. Entries look like
+`malware=bad.example,phishing=worse.example`, or one per line in a file:
+`malware bad.example` or `malware=bad.example`, with `#` comments. The format
+of the shield's `client-test-results/<run>/domains.txt` works as is.
+
+These names are **only looked up in DNS, never opened in a browser**: they are
+malware and phishing domains. For each lookup:
+
+| Answer | Result |
+|--------|--------|
+| NXDOMAIN | blocked OK |
+| Only addresses listed in `BLOCK_PAGE_IPS` (the sinkhole) | blocked OK |
+| Any other address, or a mix of sinkhole and real addresses | **block FAILED** |
+| Timeout or SERVFAIL | **block FAILED** (the resolver proved nothing) |
+
+The summary reports totals and a count per category, so a feed that stops
+blocking shows up even while the others still work. A warning is logged if
+`BLOCKED_URLS` is set without `BLOCK_PAGE_IPS`. Blocked entries never count in
+the DNS percentiles or the page failure rate. Set `MAX_BLOCK_FAILED=0` to alert.
 
 ### Output files (in `OUT_DIR`)
 
 | File | Content |
 |------|---------|
-| `page-summary.csv`, `request-details.csv` | Existing columns first, then `resolver`, `timestamp`, `kind` (and `failed`, `blockResult` on pages) |
+| `page-summary.csv`, `request-details.csv` | Existing columns first, then `resolver`, `timestamp`, `kind` (and `failed`, `category`, `blockResult`, `blockDetail` on pages) |
 | `summary.json` | Per URL and global: attempts, failed, failure rate, DNS count/avg/P50/P95/P99/max; blocked counts; threshold violations |
 
 ### Exit codes

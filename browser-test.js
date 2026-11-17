@@ -1,6 +1,7 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+const dns = require('dns');
 const lib = require('./lib');
 const {
   round, phase, percentile, average, hostnameFromUrl, csvEscape, dnsBuckets,
@@ -13,6 +14,13 @@ const {
 let CONFIG;
 try {
   CONFIG = lib.loadConfig(process.env, fs);
+  if (CONFIG.blocked.length && !CONFIG.blockPageIps.length) {
+    console.warn(
+      'WARN: BLOCKED_URLS is set but BLOCK_PAGE_IPS is not. Only NXDOMAIN counts as blocked; ' +
+      'a resolver that answers blocked names with a sinkhole IP will show block FAILED. ' +
+      'Set BLOCK_PAGE_IPS to that IP.'
+    );
+  }
 } catch (error) {
   console.error(error.message);
   console.error('Fix the variables above and run again. Exit code 2 = configuration error.');
@@ -35,11 +43,11 @@ const {
 function writeCSV(filename, rows) {
   if (!rows.length) return;
 
-  // Failure rows carry fewer fields; use the widest row so the
-  // existing column order is kept whichever row comes first.
-  const headers = Object.keys(
-    rows.reduce((a, b) => (Object.keys(b).length > Object.keys(a).length ? b : a))
-  );
+  // Failure and blocked rows carry different fields. Start from the widest
+  // row so the existing column order is kept whichever row comes first, then
+  // append columns only other rows have.
+  const widest = rows.reduce((a, b) => (Object.keys(b).length > Object.keys(a).length ? b : a));
+  const headers = [...new Set([...Object.keys(widest), ...rows.flatMap(r => Object.keys(r))])];
 
   const output = [
     headers.join(','),
@@ -959,36 +967,61 @@ async function testPageIsolated(url, runNumber) {
   }
 }
 
-async function runTask({ url, run, blocked }) {
+// Blocked names are only looked up, never opened: they are malware/phishing
+// domains. getaddrinfo is what Chromium uses too, so the answer matches.
+async function runBlockedCheck({ host, category, run }) {
   const timestamp = new Date().toISOString();
-  const stamp = row => ({ ...row, resolver: RESOLVER_LABEL, timestamp, kind: blocked ? 'blocked' : 'normal' });
+  const started = performance.now();
+  let answer;
+
+  try {
+    const records = await dns.promises.lookup(host, { all: true });
+    answer = { addresses: records.map(r => r.address) };
+  } catch (error) {
+    answer = { errorCode: error.code || 'UNKNOWN' };
+  }
+
+  const dnsMs = round(performance.now() - started);
+  const { result, detail } = lib.classifyBlocked(answer, CONFIG);
+
+  console.log(`BLOCKED CHECK [${category}] ${host}: ${result} (${detail}, ${dnsMs} ms)`);
+
+  return {
+    blocked: true,
+    host,
+    category,
+    requests: [],
+    summary: {
+      run,
+      url: host,
+      mainDnsMs: dnsMs,
+      failed: false, // a correct block is not a page failure
+      resolver: RESOLVER_LABEL,
+      timestamp,
+      kind: 'blocked',
+      category,
+      blockResult: result,
+      blockDetail: detail,
+    },
+  };
+}
+
+async function runTask({ url, run, blocked, host, category }) {
+  if (blocked) return runBlockedCheck({ host, category, run });
+
+  const timestamp = new Date().toISOString();
+  const stamp = row => ({ ...row, resolver: RESOLVER_LABEL, timestamp, kind: 'normal' });
 
   try {
     const result = await testPageIsolated(url, run);
-    const summary = stamp(result.summary);
-
-    if (blocked) {
-      summary.blockResult = lib.classifyBlocked(
-        { loadError: result.summary.loadError, remoteIp: result.remoteIp, bodyText: result.bodyText },
-        CONFIG
-      );
-      // A failed load is the expected outcome of a block, not a test failure.
-      summary.failed = false;
-    }
-
-    return { blocked, summary, requests: result.requests.map(stamp) };
+    return { blocked, summary: stamp(result.summary), requests: result.requests.map(stamp) };
   } catch (error) {
     console.error(
       `ERROR testing ${url} (run ${run}): ${error.message}. ` +
       'Counted as failed; check network access and the resolver, then run again.'
     );
     // Failure stub keeps the failed attempt visible in the CSV and counted.
-    const summary = stamp({ run, url, failed: true, loadError: error.message });
-    if (blocked) {
-      summary.blockResult = lib.classifyBlocked({ loadError: error.message }, CONFIG);
-      summary.failed = false;
-    }
-    return { blocked, summary, requests: [] };
+    return { blocked, summary: stamp({ run, url, failed: true, loadError: error.message }), requests: [] };
   }
 }
 
@@ -1001,7 +1034,7 @@ async function runTask({ url, run, blocked }) {
   const tasks = [];
   for (let run = 1; run <= REPEATS; run++) {
     for (const url of CONFIG.urls) tasks.push({ url, run, blocked: false });
-    for (const url of CONFIG.blockedUrls) tasks.push({ url, run, blocked: true });
+    for (const b of CONFIG.blocked) tasks.push({ ...b, run, blocked: true });
   }
 
   // Simple worker pool: no dependency, results kept in task order.
@@ -1154,7 +1187,7 @@ async function runTask({ url, run, blocked }) {
   });
 
   const blocked = lib.summarizeBlocked(
-    results.filter(r => r.blocked).map(r => ({ url: r.summary.url, result: r.summary.blockResult }))
+    results.filter(r => r.blocked).map(r => ({ host: r.host, category: r.category, result: r.summary.blockResult }))
   );
 
   const violations = lib.checkThresholds(stats.global, CONFIG, blocked);
@@ -1193,6 +1226,7 @@ Files created in ${CONFIG.outDir}:
 
 Resolver ${RESOLVER_LABEL}: ${stats.global.failed}/${stats.global.attempts} pages failed, P95 DNS ${stats.global.dns.p95 ?? '-'} ms
 Blocked-domain checks: ${blocked.blockedOk} blocked OK, ${blocked.blockFailed} block FAILED (of ${blocked.total})
+${Object.entries(blocked.perCategory).map(([c, v]) => `  ${c}: ${v.blockedOk}/${v.total} blocked`).join('\n')}
 `);
 
   for (const v of violations) console.error(`THRESHOLD: ${v}`);

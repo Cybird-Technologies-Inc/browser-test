@@ -34,19 +34,52 @@ test('loadConfig: hostile or bad input is rejected, all errors reported at once'
   assert.throws(
     () => lib.loadConfig({
       REPEATS: 'ten', CONCURRENCY: '0', SCROLL_PAGE: 'maybe', MAX_FAIL_RATE: '2',
-      URLS: 'javascript:alert(1),file:///etc/passwd', BLOCK_PAGE_PATTERN: '(',
+      URLS: 'javascript:alert(1),file:///etc/passwd', BLOCKED_URLS: 'malware=not a domain!',
     }, noFs),
     err => err.configErrors.length === 7 && /REPEATS/.test(err.message)
   );
 });
 
-test('classifyBlocked: NXDOMAIN, block-page IP, pattern, real answer', () => {
-  const opts = { blockPageIps: ['10.0.0.1'], blockPagePattern: /blocked by/i };
-  assert.strictEqual(lib.classifyBlocked({ loadError: 'net::ERR_NAME_NOT_RESOLVED at x' }, opts), 'blocked_ok');
-  assert.strictEqual(lib.classifyBlocked({ remoteIp: '10.0.0.1' }, opts), 'blocked_ok');
-  assert.strictEqual(lib.classifyBlocked({ bodyText: 'Site Blocked by policy' }, opts), 'blocked_ok');
-  assert.strictEqual(lib.classifyBlocked({ remoteIp: '1.2.3.4', bodyText: 'hello' }, opts), 'block_failed');
-  assert.strictEqual(lib.classifyBlocked({ loadError: 'Timeout 45000ms exceeded' }, opts), 'block_failed');
+test('classifyBlocked: NXDOMAIN, sinkhole, real answer, mixed answer, resolver error', () => {
+  const opts = { blockPageIps: ['10.0.0.1'] };
+  assert.deepStrictEqual(lib.classifyBlocked({ errorCode: 'ENOTFOUND' }, opts), { result: 'blocked_ok', detail: 'NXDOMAIN' });
+  assert.strictEqual(lib.classifyBlocked({ addresses: ['10.0.0.1'] }, opts).result, 'blocked_ok');
+  assert.strictEqual(lib.classifyBlocked({ addresses: ['1.2.3.4'] }, opts).result, 'block_failed');
+  // One real address next to the sinkhole is still a leak.
+  assert.strictEqual(lib.classifyBlocked({ addresses: ['10.0.0.1', '1.2.3.4'] }, opts).result, 'block_failed');
+  // A timeout or SERVFAIL proves nothing, so it must not pass.
+  assert.match(lib.classifyBlocked({ errorCode: 'ETIMEOUT' }, opts).detail, /ETIMEOUT/);
+  assert.strictEqual(lib.classifyBlocked({ errorCode: 'ESERVFAIL' }, opts).result, 'block_failed');
+  // Without a configured sinkhole only NXDOMAIN passes.
+  assert.strictEqual(lib.classifyBlocked({ addresses: ['10.0.0.1'] }, {}).result, 'block_failed');
+});
+
+test('parseBlockedList: categories, bare domains, URLs, files, bad input', () => {
+  const errors = [];
+  const list = lib.parseBlockedList('Malware=Bad.Example, phishing=https://p.example/x?a=b, plain.example', errors, noFs);
+  assert.deepStrictEqual(list, [
+    { category: 'malware', host: 'bad.example' },
+    { category: 'phishing', host: 'p.example' },
+    { category: 'uncategorized', host: 'plain.example' },
+  ]);
+  assert.deepStrictEqual(errors, []);
+  const fs = { existsSync: () => true, readFileSync: () => '# feed sample\nmalware=m1.example # note\n\nphishing p1.example\n' };
+  assert.deepStrictEqual(lib.parseBlockedList('f.txt', [], fs).map(e => e.category), ['malware', 'phishing']);
+  const bad = [];
+  lib.parseBlockedList('malware=a b;rm -rf', bad, noFs);
+  assert.strictEqual(bad.length, 1);
+});
+
+test('summarizeBlocked: totals and per-category', () => {
+  const s = lib.summarizeBlocked([
+    { host: 'm1', category: 'malware', result: 'blocked_ok' },
+    { host: 'm2', category: 'malware', result: 'blocked_ok' },
+    { host: 'p1', category: 'phishing', result: 'blocked_ok' },
+    { host: 'p2', category: 'phishing', result: 'block_failed' },
+  ]);
+  assert.deepStrictEqual([s.total, s.blockedOk, s.blockFailed], [4, 3, 1]);
+  assert.deepStrictEqual(s.perCategory.phishing, { total: 2, blockedOk: 1, blockFailed: 1 });
+  assert.deepStrictEqual(s.failedDomains, ['p2']);
 });
 
 test('summarizeResults: per-URL and global failure rate and DNS percentiles', () => {
