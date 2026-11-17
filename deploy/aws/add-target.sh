@@ -24,9 +24,9 @@ require_instance
 FILE="/etc/browser-test/targets/${LABEL}.env"
 # The command has no quotes that need escaping in JSON. The IP and label were validated above.
 if [ "${FORCE:-0}" = "1" ]; then
-  CMD="install -d -m 0755 /etc/browser-test/targets && printf RESOLVER_DNS_IP=${IP}\\\\n > ${FILE} && chmod 0644 ${FILE}"
+  CMD="install -d -m 0755 /etc/browser-test/targets && echo RESOLVER_DNS_IP=${IP} > ${FILE} && chmod 0644 ${FILE}"
 else
-  CMD="install -d -m 0755 /etc/browser-test/targets && if [ -e ${FILE} ]; then echo EXISTS; exit 3; else printf RESOLVER_DNS_IP=${IP}\\\\n > ${FILE} && chmod 0644 ${FILE}; fi"
+  CMD="install -d -m 0755 /etc/browser-test/targets && if [ -e ${FILE} ]; then echo EXISTS; exit 3; else echo RESOLVER_DNS_IP=${IP} > ${FILE} && chmod 0644 ${FILE}; fi"
 fi
 if mut "write $FILE on $INSTANCE_ID via SSM (refuses to overwrite unless FORCE=1)"; then
   ssm_run "$CMD" || die "Could not write $FILE. If the file already exists, set FORCE=1 to overwrite, or edit it by hand through a shell."

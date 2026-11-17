@@ -313,3 +313,8 @@ test('setup.sh takes the run lock and uses the VPC resolver before any download'
   assert.ok(lock > 0 && vpc > 0 && apt > 0);
   assert.ok(lock < apt && vpc < apt, 'lock and VPC DNS must come before the first download');
 });
+
+test('add-target.sh writes the env line without printf escapes (a literal "n" once ended the IP)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'deploy', 'aws', 'add-target.sh'), 'utf8');
+  assert.doesNotMatch(src, /printf RESOLVER_DNS_IP/);
+});
