@@ -304,3 +304,12 @@ test('run-all.sh: a held lock exits 0 without running anything', () => {
   assert.match(r.stderr, /Previous cycle still running/);
   assert.strictEqual(calls.length, 0);
 });
+
+test('setup.sh takes the run lock and uses the VPC resolver before any download', () => {
+  const t = fs.readFileSync(path.join(deployDir, 'instance', 'setup.sh'), 'utf8');
+  const lock = t.indexOf('flock -w');
+  const vpc = t.indexOf('DNS=%s');
+  const apt = t.indexOf('apt-get update');
+  assert.ok(lock > 0 && vpc > 0 && apt > 0);
+  assert.ok(lock < apt && vpc < apt, 'lock and VPC DNS must come before the first download');
+});

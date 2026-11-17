@@ -33,6 +33,22 @@ esac
 # Atomic symlink switch: create the new link beside the old one, then rename over it.
 flip_link() { ln -sfn "$1" "$2.tmp" && mv -Tf "$2.tmp" "$2"; }
 
+# Same lock as run-all.sh: a monitoring cycle must not flip the resolver in the middle of an
+# install, and an install must not start while a cycle is running.
+install -d -m 0750 "$STATE_DIR"
+exec 8>"$STATE_DIR/run.lock"
+flock -w 1800 8 || die "Another cycle or install holds $STATE_DIR/run.lock for over 30 minutes. Check 'systemctl status browser-test.service'."
+
+# Installing needs apt, nodejs.org, npm and the Playwright CDN. The resolver under test may be
+# down, or may not yet approve this host's IP, so use the VPC resolver while installing.
+# run-all.sh (and step 7) point the host at the resolver under test again afterwards.
+VPC_DNS=169.254.169.253
+if systemctl is-active --quiet systemd-resolved; then
+  install -d -m 0755 /etc/systemd/resolved.conf.d
+  printf '# Managed by deploy/instance/setup.sh. Install-time only.\n[Resolve]\nDNS=%s\nDomains=~.\nFallbackDNS=\n' "$VPC_DNS" >/etc/systemd/resolved.conf.d/browser-test.conf
+  systemctl restart systemd-resolved
+fi
+
 # --- 1. OS tools ---
 # awscli v2 is installed by user-data from the official zip (Ubuntu 24.04 has no apt awscli,
 # and the snap is avoided). Only plain tools are needed here.
