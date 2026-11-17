@@ -1254,8 +1254,18 @@ async function runTask({ url, run, blocked, host, category }) {
     failures,
     dnsChecks: CONFIG.dnsDomains.length ? dnsChecks : null,
     thresholdViolations: violations,
+    trend: null,
     exitCode: violations.length ? 1 : 0,
   };
+
+  // A missing or damaged previous file only means "no trend"; it must never fail the run.
+  if (CONFIG.previousSummary) {
+    try {
+      summaryJson.trend = lib.compareRuns(JSON.parse(fs.readFileSync(CONFIG.previousSummary, 'utf8')), summaryJson);
+    } catch (error) {
+      console.warn(`WARN: previous summary ignored (${error.message}); no trend this run.`);
+    }
+  }
 
   fs.writeFileSync(
     path.join(CONFIG.outDir, 'summary.json'),
@@ -1271,7 +1281,7 @@ Files created in ${CONFIG.outDir}:
 
 Resolver ${RESOLVER_LABEL}: ${stats.global.failed}/${stats.global.attempts} pages failed, P95 DNS ${stats.global.dns.p95 ?? '-'} ms
 ${failures.advice.map(a => `Why: ${a}`).join('\n')}${CONFIG.dnsDomains.length ? `\nDNS-only checks: ${dnsChecks.failed}/${dnsChecks.total} failed, P95 ${dnsChecks.p95 ?? '-'} ms` : ''}
-Blocked-domain checks: ${blocked.blockedOk} blocked OK, ${blocked.blockFailed} block FAILED (of ${blocked.total})
+${summaryJson.trend ? `Trend vs ${summaryJson.trend.previousStartedAt}: ${summaryJson.trend.notes.join('; ') || 'no change'}\n` : ''}Blocked-domain checks: ${blocked.blockedOk} blocked OK, ${blocked.blockFailed} block FAILED (of ${blocked.total})
 ${Object.entries(blocked.perCategory).map(([c, v]) => `  ${c}: ${v.blockedOk}/${v.total} blocked`).join('\n')}
 `);
 

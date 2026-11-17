@@ -129,6 +129,13 @@ for f in "${files[@]}"; do
   # Old files would be uploaded as new if this run crashed before writing.
   rm -rf "$out"; mkdir -p "$out"
   [ -z "$RUN_AS" ] || chown -R "$RUN_USER:$RUN_USER" "$out"
+  # Previous run of this label, for the trend. First run or a failed download = no trend.
+  if $AWS_CMD s3 cp "s3://$BUCKET/results/resolver=$label/latest.json" "$out/previous-summary.json" --only-show-errors 2>/dev/null; then
+    [ -z "$RUN_AS" ] || chown "$RUN_USER:$RUN_USER" "$out/previous-summary.json"
+    ENVMAP[PREVIOUS_SUMMARY]="$out/previous-summary.json"
+  else
+    log INFO "Target $label: no previous summary in S3, so no trend this run"
+  fi
   # The label always comes from the file name; a stale RESOLVER_LABEL in the env is ignored.
   ENVMAP[RESOLVER_LABEL]="$label"; ENVMAP[OUT_DIR]="$out"; ENVMAP[HOME]="${ENVMAP[HOME]:-$STATE_DIR}"
   declare -a envargs=()

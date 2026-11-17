@@ -48,6 +48,12 @@ or `no_response`. A `dns` or `timeout` points at the resolver; `http_*` means th
 site answered, so DNS worked. The alert email lists the failed URLs and the advice.
 `MAX_P95_DNS_MS`, `MAX_FAIL_RATE` and `MAX_DNS_CHECK_FAIL_RATE` exit 1 when exceeded.
 
+**Trend.** If `PREVIOUS_SUMMARY` points to the previous run's `summary.json`, the new
+`summary.json` gets a `trend` block: change in failure rate and P95 DNS, newly failing
+and recovered URLs. It is report only and never changes the exit code. A missing,
+damaged or other-resolver file means no trend. On the AWS box the runner downloads
+`results/resolver=<label>/latest.json` before each run and sets this itself.
+
 ### Blocked domains (feed categories)
 
 `BLOCKED_URLS` checks that each feed category really blocks. Entries look like

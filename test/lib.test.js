@@ -184,3 +184,20 @@ test('DNS_DOMAINS and MAX_DNS_CHECK_FAIL_RATE: parsing, summary, threshold, host
   assert.match(lib.checkThresholds(g, { maxDnsCheckFailRate: 0.1 }, null, d)[0], /MAX_DNS_CHECK_FAIL_RATE/);
   assert.deepStrictEqual(lib.checkThresholds(g, {}, null, d), []);
 });
+
+test('compareRuns: deltas, newly failing, recovered, and no trend when not comparable', () => {
+  const run = (resolver, failureRate, p95, perUrl) => ({
+    resolver, startedAt: 't', global: { failureRate, dns: { p95 } }, perUrl,
+  });
+  const prev = run('r1', 0, 100, { a: { failed: 0 }, b: { failed: 1 } });
+  const cur = run('r1', 0.2, 150, { a: { failed: 1 }, b: { failed: 0 } });
+  const t = lib.compareRuns(prev, cur);
+  assert.strictEqual(t.p95DnsMs.delta, 50);
+  assert.deepStrictEqual([t.newlyFailed, t.recovered], [['a'], ['b']]);
+  assert.match(t.notes.join(' '), /P95 DNS up 100 -> 150 ms \(50%\)/);
+  assert.strictEqual(lib.compareRuns(null, cur), null);
+  assert.strictEqual(lib.compareRuns({ junk: true }, cur), null);
+  assert.strictEqual(lib.compareRuns(run('other', 0, 1, {}), cur), null); // never compare across resolvers
+  assert.deepStrictEqual(lib.compareRuns(cur, cur).notes, []);
+  assert.strictEqual(lib.compareRuns(run('r1', 0, null, {}), run('r1', 0, 5, {})).p95DnsMs.delta, null);
+});

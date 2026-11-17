@@ -177,6 +177,8 @@ function loadConfig(env, fsLike) {
     cacheLikeThresholdMs: num('CACHE_LIKE_THRESHOLD_MS', 2, { min: 0 }),
     navTimeoutMs: num('NAV_TIMEOUT_MS', 45000, { min: 1000, integer: true }),
     outDir: env.OUT_DIR || '.',
+    // Optional summary.json of the previous run, for the trend. The runner downloads it.
+    previousSummary: env.PREVIOUS_SUMMARY || null,
     resolverLabel: env.RESOLVER_LABEL || 'unlabeled',
     // HTTP statuses that are NOT counted as failures, e.g. 403 when a site blocks datacenter
     // clients. Empty by default: 4xx and 5xx fail, as before.
@@ -300,6 +302,31 @@ function checkThresholds(global, { maxP95DnsMs = null, maxFailRate = null, maxBl
   return violations;
 }
 
+// Compares this run with the previous run of the same resolver. Report only: no
+// threshold, so a trend never changes the exit code. Returns null when there is
+// nothing usable to compare with (first run, other resolver, damaged file).
+function compareRuns(prev, cur) {
+  const usable = x => x && typeof x === 'object' && x.global && x.global.dns && x.perUrl;
+  if (!usable(prev) || !usable(cur) || prev.resolver !== cur.resolver) return null;
+  const pair = (a, b) => ({ previous: a, current: b, delta: a === null || b === null ? null : round(b - a) });
+  const failedUrls = r => new Set(Object.entries(r.perUrl).filter(([, v]) => v.failed > 0).map(([u]) => u));
+  const before = failedUrls(prev);
+  const after = failedUrls(cur);
+  const newlyFailed = [...after].filter(u => !before.has(u));
+  const recovered = [...before].filter(u => !after.has(u));
+  const failureRate = pair(prev.global.failureRate, cur.global.failureRate);
+  const p95DnsMs = pair(prev.global.dns.p95, cur.global.dns.p95);
+  const notes = [];
+  if (failureRate.delta) notes.push(`failure rate ${failureRate.delta > 0 ? 'up' : 'down'} ${prev.global.failureRate} -> ${cur.global.failureRate}`);
+  if (p95DnsMs.delta) {
+    const pct = prev.global.dns.p95 ? ` (${Math.round((p95DnsMs.delta / prev.global.dns.p95) * 100)}%)` : '';
+    notes.push(`P95 DNS ${p95DnsMs.delta > 0 ? 'up' : 'down'} ${prev.global.dns.p95} -> ${cur.global.dns.p95} ms${pct}`);
+  }
+  if (newlyFailed.length) notes.push(`newly failing: ${newlyFailed.join(', ')}`);
+  if (recovered.length) notes.push(`recovered: ${recovered.join(', ')}`);
+  return { previousStartedAt: prev.startedAt || null, failureRate, p95DnsMs, newlyFailed, recovered, notes };
+}
+
 // Same convention as common uptime monitors: 4xx and 5xx are failures.
 function isHttpFailure(status, ignore = []) {
   return typeof status === 'number' && status >= 400 && !ignore.includes(status);
@@ -371,5 +398,5 @@ function withTimeout(promise, ms, message) {
 module.exports = {
   DEFAULT_URLS, parseBlockedList, round, phase, percentile, average, hostnameFromUrl, csvEscape, dnsBuckets,
   loadConfig, parseUrlList, classifyBlocked, rate, dnsStats, summarizeResults, summarizeBlocked, checkThresholds, isHttpFailure, withTimeout,
-  classifyFailure, summarizeFailures, summarizeDnsChecks, parseDomainList,
+  compareRuns, classifyFailure, summarizeFailures, summarizeDnsChecks, parseDomainList,
 };
