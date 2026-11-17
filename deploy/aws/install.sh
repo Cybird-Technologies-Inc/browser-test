@@ -120,6 +120,8 @@ step_iam() {
   "Statement": [
     {"Sid": "PutResults", "Effect": "Allow", "Action": "s3:PutObject",
      "Resource": "arn:aws:s3:::'"$BUCKET"'/results/*"},
+    {"Sid": "GetLatestForTrend", "Effect": "Allow", "Action": "s3:GetObject",
+     "Resource": "arn:aws:s3:::'"$BUCKET"'/results/resolver=*/latest.json"},
     {"Sid": "GetReleases", "Effect": "Allow", "Action": "s3:GetObject",
      "Resource": "arn:aws:s3:::'"$BUCKET"'/releases/*"},
     {"Sid": "PublishAlerts", "Effect": "Allow", "Action": "sns:Publish",

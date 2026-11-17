@@ -318,3 +318,9 @@ test('add-target.sh writes the env line without printf escapes (a literal "n" on
   const src = fs.readFileSync(path.join(__dirname, '..', 'deploy', 'aws', 'add-target.sh'), 'utf8');
   assert.doesNotMatch(src, /printf RESOLVER_DNS_IP/);
 });
+
+test('IAM: the runner may read only latest.json under results/ (for the trend), not all results', () => {
+  const text = fs.readFileSync(path.join(deployDir, 'aws', 'install.sh'), 'utf8');
+  assert.match(text, /s3:GetObject",\n\s+"Resource": "arn:aws:s3:::'"\$BUCKET"'\/results\/resolver=\*\/latest\.json"/);
+  assert.ok(!/GetObject[^}]*results\/\*/.test(text), 'no GetObject on results/*');
+});
