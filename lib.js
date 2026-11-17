@@ -6,7 +6,6 @@ const DEFAULT_URLS = [
   'https://www.google.com',
   'https://www.microsoft.com',
   'https://www.amazon.in',
-  'https://www.linkedin.com',
   'https://www.youtube.com',
 ];
 
@@ -140,6 +139,26 @@ function parseBlockedList(raw, errors, fsLike) {
   return entries;
 }
 
+function parseStatusList(raw, errors) {
+  if (!raw) return [];
+  return raw.split(',').map(x => x.trim()).filter(Boolean).map(x => {
+    const n = Number(x);
+    if (!Number.isInteger(n) || n < 400 || n > 599) errors.push(`IGNORE_HTTP_STATUS has "${x}". Use HTTP error codes 400-599.`);
+    return n;
+  });
+}
+
+// Plain domains, comma list or file (one per line, # comments).
+function parseDomainList(raw, errors, fsLike) {
+  const items = (fsLike.existsSync(raw)
+    ? fsLike.readFileSync(raw, 'utf8').split('\n').map(l => l.replace(/#.*$/, '').trim())
+    : raw.split(',').map(x => x.trim())).filter(Boolean);
+  for (const d of items) {
+    if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i.test(d) || d.length > 253) errors.push(`DNS_DOMAINS has an invalid domain "${d}".`);
+  }
+  return items.map(d => d.toLowerCase());
+}
+
 function loadConfig(env, fsLike) {
   const errors = [];
   const num = (key, fallback, opts) => parseNumber(env[key], fallback, key, errors, opts);
@@ -159,6 +178,13 @@ function loadConfig(env, fsLike) {
     navTimeoutMs: num('NAV_TIMEOUT_MS', 45000, { min: 1000, integer: true }),
     outDir: env.OUT_DIR || '.',
     resolverLabel: env.RESOLVER_LABEL || 'unlabeled',
+    // HTTP statuses that are NOT counted as failures, e.g. 403 when a site blocks datacenter
+    // clients. Empty by default: 4xx and 5xx fail, as before.
+    ignoreHttpStatus: parseStatusList(env.IGNORE_HTTP_STATUS, errors),
+    // DNS-only lookups of plain domains, timed through the same OS resolver the browser uses.
+    dnsDomains: env.DNS_DOMAINS ? parseDomainList(env.DNS_DOMAINS, errors, fsLike) : [],
+    dnsRepeats: num('DNS_REPEATS', 3, { min: 1, max: 100, integer: true }),
+    maxDnsCheckFailRate: num('MAX_DNS_CHECK_FAIL_RATE', null, { min: 0, max: 1 }),
     // null means "no limit": thresholds are opt-in so existing runs keep exiting 0.
     maxP95DnsMs: num('MAX_P95_DNS_MS', null, { min: 0 }),
     maxFailRate: num('MAX_FAIL_RATE', null, { min: 0, max: 1 }),
@@ -251,7 +277,7 @@ function summarizeBlocked(results) {
 }
 
 // Returns one message per exceeded limit; empty means pass.
-function checkThresholds(global, { maxP95DnsMs = null, maxFailRate = null, maxBlockFailed = null } = {}, blocked = null) {
+function checkThresholds(global, { maxP95DnsMs = null, maxFailRate = null, maxBlockFailed = null, maxDnsCheckFailRate = null } = {}, blocked = null, dnsChecks = null) {
   const violations = [];
   if (maxP95DnsMs !== null && global.dns.p95 !== null && global.dns.p95 > maxP95DnsMs) {
     violations.push(`MAX_P95_DNS_MS exceeded: P95 DNS ${global.dns.p95} ms > limit ${maxP95DnsMs} ms`);
@@ -266,12 +292,70 @@ function checkThresholds(global, { maxP95DnsMs = null, maxFailRate = null, maxBl
       `MAX_BLOCK_FAILED exceeded: ${blocked.blockFailed} of ${blocked.total} blocked domains were answered > limit ${maxBlockFailed}`
     );
   }
+  if (maxDnsCheckFailRate !== null && dnsChecks && dnsChecks.failureRate > maxDnsCheckFailRate) {
+    violations.push(
+      `MAX_DNS_CHECK_FAIL_RATE exceeded: DNS-only failure rate ${dnsChecks.failureRate} (${dnsChecks.failed}/${dnsChecks.total}) > limit ${maxDnsCheckFailRate}`
+    );
+  }
   return violations;
 }
 
 // Same convention as common uptime monitors: 4xx and 5xx are failures.
-function isHttpFailure(status) {
-  return typeof status === 'number' && status >= 400;
+function isHttpFailure(status, ignore = []) {
+  return typeof status === 'number' && status >= 400 && !ignore.includes(status);
+}
+
+// Why a page failed, in terms an operator can act on. null = not failed.
+// 'dns' and 'timeout' point at the resolver or network; 'http_*' says the site
+// answered, so the resolver did its job.
+function classifyFailure({ failed, loadError, httpStatus }) {
+  if (!failed) return null;
+  const e = String(loadError || '');
+  if (/ERR_NAME_NOT_RESOLVED|ERR_NAME_RESOLUTION_FAILED|ENOTFOUND/i.test(e)) return 'dns';
+  if (/Timeout|timed out|ERR_TIMED_OUT/i.test(e)) return 'timeout';
+  if (/ERR_CERT|ERR_SSL|SSL_|ERR_BAD_SSL/i.test(e)) return 'tls';
+  if (/ERR_CONNECTION|ERR_ADDRESS|ERR_INTERNET|ERR_NETWORK|ERR_PROXY|ERR_TUNNEL/i.test(e)) return 'connection';
+  if (typeof httpStatus === 'number' && httpStatus >= 500) return 'http_5xx';
+  if (typeof httpStatus === 'number' && httpStatus >= 400) return 'http_4xx';
+  return e ? 'other' : 'no_response';
+}
+
+const ADVICE = {
+  dns: 'Name lookups failed: check the resolver and that this host\'s IP is approved on it.',
+  timeout: 'Pages timed out: the resolver or the path is slow or dropping packets; compare with the DNS-only checks.',
+  tls: 'TLS errors: usually the site or a middlebox, not DNS. Check the site from another network.',
+  connection: 'Connections failed after DNS worked: network path or the site, not the resolver name lookup.',
+  http_4xx: 'The site answered with a client error (for example a 403 bot block). DNS worked. If this is a site policy, drop the URL or set IGNORE_HTTP_STATUS.',
+  http_5xx: 'The site answered with a server error. DNS worked; usually the site, not the resolver.',
+  other: 'Unclassified load error: see loadError in page-summary.csv.',
+  no_response: 'No main response: see loadError in page-summary.csv.',
+};
+
+// pages: [{url, failed, reason, httpStatus, loadError}]
+function summarizeFailures(pages) {
+  const failedPages = pages.filter(p => p.failed);
+  const byReason = {};
+  for (const p of failedPages) byReason[p.reason] = (byReason[p.reason] || 0) + 1;
+  return {
+    byReason,
+    failedUrls: failedPages.map(p => ({ url: p.url, reason: p.reason, httpStatus: p.httpStatus ?? null })),
+    advice: Object.keys(byReason).map(r => `${r} (${byReason[r]}): ${ADVICE[r] || ADVICE.other}`),
+  };
+}
+
+// results: [{host, ok, ms, errorCode}] from DNS-only lookups.
+function summarizeDnsChecks(results) {
+  const ok = results.filter(r => r.ok);
+  const ms = ok.map(r => r.ms);
+  return {
+    total: results.length,
+    failed: results.length - ok.length,
+    failureRate: rate(results.length - ok.length, results.length),
+    p50: percentile(ms, 0.5),
+    p95: percentile(ms, 0.95),
+    max: ms.length ? round(Math.max(...ms)) : null,
+    failedDomains: [...new Set(results.filter(r => !r.ok).map(r => `${r.host} (${r.errorCode})`))],
+  };
 }
 
 // Hard cap for a hung browser that ignores Playwright's own timeouts.
@@ -287,4 +371,5 @@ function withTimeout(promise, ms, message) {
 module.exports = {
   DEFAULT_URLS, parseBlockedList, round, phase, percentile, average, hostnameFromUrl, csvEscape, dnsBuckets,
   loadConfig, parseUrlList, classifyBlocked, rate, dnsStats, summarizeResults, summarizeBlocked, checkThresholds, isHttpFailure, withTimeout,
+  classifyFailure, summarizeFailures, summarizeDnsChecks, parseDomainList,
 };

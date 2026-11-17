@@ -36,6 +36,11 @@ else
     violations="$(node -e '
       const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
       for (const v of s.thresholdViolations || []) console.log("- " + v);
+      const f = s.failures || {};
+      for (const u of f.failedUrls || []) console.log("  failed: " + u.url + " [" + u.reason + (u.httpStatus ? " HTTP " + u.httpStatus : "") + "]");
+      for (const a of f.advice || []) console.log("  why: " + a);
+      const d = s.dnsChecks;
+      if (d && d.failed) console.log("  dns-only failures: " + d.failedDomains.join(", "));
     ' "$OUT_DIR/$label/summary.json" 2>/dev/null || echo "- (summary.json could not be read)")"
   fi
   subject="browser-test alert: $label exit $code"

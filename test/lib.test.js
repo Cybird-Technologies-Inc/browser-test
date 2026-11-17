@@ -137,3 +137,50 @@ test('csvEscape: commas, quotes, newlines, null', () => {
   assert.strictEqual(lib.csvEscape('a,"b"\n'), '"a,""b""\n"');
   assert.strictEqual(lib.csvEscape(null), '');
 });
+
+test('classifyFailure: reasons an operator can act on', () => {
+  const f = (loadError, httpStatus) => lib.classifyFailure({ failed: true, loadError, httpStatus });
+  assert.strictEqual(lib.classifyFailure({ failed: false }), null);
+  assert.strictEqual(f('net::ERR_NAME_NOT_RESOLVED at https://x'), 'dns');
+  assert.strictEqual(f('page.goto: Timeout 45000ms exceeded'), 'timeout');
+  assert.strictEqual(f('timed out after 80000 ms'), 'timeout');
+  assert.strictEqual(f('net::ERR_CERT_DATE_INVALID'), 'tls');
+  assert.strictEqual(f('net::ERR_CONNECTION_RESET'), 'connection');
+  assert.strictEqual(f(null, 403), 'http_4xx');
+  assert.strictEqual(f(null, 503), 'http_5xx');
+  assert.strictEqual(f(null, null), 'no_response');
+  assert.strictEqual(f('weird'), 'other');
+});
+
+test('summarizeFailures: counts by reason and gives advice', () => {
+  const s = lib.summarizeFailures([
+    { url: 'a', failed: true, reason: 'http_4xx', httpStatus: 403 },
+    { url: 'b', failed: false },
+    { url: 'c', failed: true, reason: 'dns' },
+  ]);
+  assert.deepStrictEqual(s.byReason, { http_4xx: 1, dns: 1 });
+  assert.strictEqual(s.failedUrls.length, 2);
+  assert.match(s.advice.join(' '), /403 bot block/);
+});
+
+test('IGNORE_HTTP_STATUS: listed statuses do not fail, bad values are rejected', () => {
+  assert.strictEqual(lib.isHttpFailure(403, [403]), false);
+  assert.strictEqual(lib.isHttpFailure(500, [403]), true);
+  assert.deepStrictEqual(lib.loadConfig({ IGNORE_HTTP_STATUS: '403, 429' }, noFs).ignoreHttpStatus, [403, 429]);
+  assert.throws(() => lib.loadConfig({ IGNORE_HTTP_STATUS: '200' }, noFs), /IGNORE_HTTP_STATUS/);
+});
+
+test('DNS_DOMAINS and MAX_DNS_CHECK_FAIL_RATE: parsing, summary, threshold, hostile input', () => {
+  const c = lib.loadConfig({ DNS_DOMAINS: 'A.example, b.example', DNS_REPEATS: '2', MAX_DNS_CHECK_FAIL_RATE: '0.1' }, noFs);
+  assert.deepStrictEqual(c.dnsDomains, ['a.example', 'b.example']);
+  assert.throws(() => lib.loadConfig({ DNS_DOMAINS: 'a b;rm -rf /' }, noFs), /DNS_DOMAINS/);
+  const d = lib.summarizeDnsChecks([
+    { host: 'a.example', ok: true, ms: 10 }, { host: 'a.example', ok: true, ms: 30 },
+    { host: 'b.example', ok: false, ms: null, errorCode: 'ETIMEOUT' }, { host: 'b.example', ok: true, ms: 20 },
+  ]);
+  assert.deepStrictEqual([d.total, d.failed, d.failureRate, d.p50], [4, 1, 0.25, 20]);
+  assert.deepStrictEqual(d.failedDomains, ['b.example (ETIMEOUT)']);
+  const g = { attempts: 1, failed: 0, failureRate: 0, dns: { p95: 1 } };
+  assert.match(lib.checkThresholds(g, { maxDnsCheckFailRate: 0.1 }, null, d)[0], /MAX_DNS_CHECK_FAIL_RATE/);
+  assert.deepStrictEqual(lib.checkThresholds(g, {}, null, d), []);
+});

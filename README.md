@@ -18,7 +18,7 @@ Every variable is optional. Defaults equal the old hardcoded values.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `URLS` | 5 built-in sites | Comma list of `http(s)` URLs, or a path to a file (one URL per line, `#` comments) |
+| `URLS` | 4 built-in sites | Comma list of `http(s)` URLs, or a path to a file (one URL per line, `#` comments) |
 | `REPEATS` | `1` | Passes over the URL list |
 | `CONCURRENCY` | `1` | Parallel browsers (max 50). Console output interleaves when above 1 |
 | `SETTLE_TIME_MS` | `3000` | Wait after load for lazy resources |
@@ -29,14 +29,24 @@ Every variable is optional. Defaults equal the old hardcoded values.
 | `RESOLVER_LABEL` | `unlabeled` | Label written to every CSV row and `summary.json` |
 | `MAX_P95_DNS_MS` | unset | Fail if the global P95 DNS (ms) is above this |
 | `MAX_FAIL_RATE` | unset | Fail if failed pages / attempts (0 to 1) is above this |
+| `IGNORE_HTTP_STATUS` | unset | Comma list of HTTP error codes (400-599) that do not count as failures, for example `403` for a site that blocks datacenter clients |
+| `DNS_DOMAINS` | unset | Plain domains for DNS-only timing (comma list or file). Runs after the page tests, no browser |
+| `DNS_REPEATS` | `3` | Lookups per `DNS_DOMAINS` entry |
+| `MAX_DNS_CHECK_FAIL_RATE` | unset | Fail if DNS-only lookups that failed / total (0 to 1) is above this |
 | `BLOCKED_URLS` | unset | Domains the resolver should block, as `category=domain` entries (comma list, or a file). See below |
 | `MAX_BLOCK_FAILED` | unset | Fail if more than this many blocked domains were answered. Use `0` whenever `BLOCKED_URLS` is set |
 | `BLOCK_PAGE_IPS` | unset | Comma list of the resolver's sinkhole IPs (list both IPv4 and IPv6 if it answers both) |
 
 A page counts as **failed** if it throws, times out, gets no main response, or
 answers with HTTP 4xx or 5xx (the convention of common uptime monitors). Some
-sites answer headless browsers with 4xx (for example LinkedIn); drop such sites
-from `URLS` or the failure rate will never reach 0.
+sites answer datacenter clients with 4xx (for example a 403 bot block); drop such
+sites from `URLS`, or list their code in `IGNORE_HTTP_STATUS`.
+
+Every failure gets a reason in `summary.json` (`failures.byReason`, `failedUrls`,
+`advice`): `dns`, `timeout`, `tls`, `connection`, `http_4xx`, `http_5xx`, `other`
+or `no_response`. A `dns` or `timeout` points at the resolver; `http_*` means the
+site answered, so DNS worked. The alert email lists the failed URLs and the advice.
+`MAX_P95_DNS_MS`, `MAX_FAIL_RATE` and `MAX_DNS_CHECK_FAIL_RATE` exit 1 when exceeded.
 
 ### Blocked domains (feed categories)
 
@@ -72,7 +82,7 @@ the DNS percentiles or the page failure rate. Set `MAX_BLOCK_FAILED=0` to alert.
 | Code | Meaning |
 |------|---------|
 | `0` | Run finished, no threshold exceeded |
-| `1` | `MAX_P95_DNS_MS`, `MAX_FAIL_RATE` or `MAX_BLOCK_FAILED` exceeded (the message says which) |
+| `1` | `MAX_P95_DNS_MS`, `MAX_FAIL_RATE`, `MAX_DNS_CHECK_FAIL_RATE` or `MAX_BLOCK_FAILED` exceeded (the message says which) |
 | `2` | Invalid configuration (all problems are listed) |
 
 ### Example profiles

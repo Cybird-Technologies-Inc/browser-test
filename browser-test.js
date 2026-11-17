@@ -787,7 +787,10 @@ async function testPage(browser, url, runNumber) {
 
   // A page with no main response, or an HTTP 4xx/5xx, is a failed test
   // even if Playwright did not throw.
-  summary.failed = !mainResponse || !!loadError || lib.isHttpFailure(mainResponse.status());
+  summary.failed = !mainResponse || !!loadError || lib.isHttpFailure(mainResponse.status(), CONFIG.ignoreHttpStatus);
+  summary.failureReason = lib.classifyFailure({
+    failed: summary.failed, loadError, httpStatus: mainResponse ? mainResponse.status() : null,
+  });
 
   // ======================================================
   // DISPLAY RESULTS
@@ -1006,6 +1009,28 @@ async function runBlockedCheck({ host, category, run }) {
   };
 }
 
+// DNS-only timing of plain domains through the OS resolver (getaddrinfo, same as Chromium).
+// Run after the page tests so the two never compete for the resolver.
+async function runDnsChecks() {
+  const jobs = [];
+  for (let i = 0; i < CONFIG.dnsRepeats; i++) for (const host of CONFIG.dnsDomains) jobs.push(host);
+  const out = new Array(jobs.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(CONFIG.concurrency, jobs.length) }, async () => {
+    while (next < jobs.length) {
+      const i = next++;
+      const started = performance.now();
+      try {
+        await dns.promises.lookup(jobs[i], { all: true });
+        out[i] = { host: jobs[i], ok: true, ms: round(performance.now() - started) };
+      } catch (error) {
+        out[i] = { host: jobs[i], ok: false, ms: null, errorCode: error.code || 'UNKNOWN' };
+      }
+    }
+  }));
+  return lib.summarizeDnsChecks(out);
+}
+
 async function runTask({ url, run, blocked, host, category }) {
   if (blocked) return runBlockedCheck({ host, category, run });
 
@@ -1021,7 +1046,14 @@ async function runTask({ url, run, blocked, host, category }) {
       'Counted as failed; check network access and the resolver, then run again.'
     );
     // Failure stub keeps the failed attempt visible in the CSV and counted.
-    return { blocked, summary: stamp({ run, url, failed: true, loadError: error.message }), requests: [] };
+    return {
+      blocked,
+      summary: stamp({
+        run, url, failed: true, loadError: error.message,
+        failureReason: lib.classifyFailure({ failed: true, loadError: error.message }),
+      }),
+      requests: [],
+    };
   }
 }
 
@@ -1186,11 +1218,20 @@ async function runTask({ url, run, blocked, host, category }) {
     cacheLikeMs: CACHE_LIKE_THRESHOLD_MS,
   });
 
+  const failures = lib.summarizeFailures(
+    normal.map(r => ({
+      url: r.summary.url, failed: r.summary.failed, reason: r.summary.failureReason,
+      httpStatus: r.summary.httpStatus, loadError: r.summary.loadError,
+    }))
+  );
+
+  const dnsChecks = await runDnsChecks();
+
   const blocked = lib.summarizeBlocked(
     results.filter(r => r.blocked).map(r => ({ host: r.host, category: r.category, result: r.summary.blockResult }))
   );
 
-  const violations = lib.checkThresholds(stats.global, CONFIG, blocked);
+  const violations = lib.checkThresholds(stats.global, CONFIG, blocked, CONFIG.dnsDomains.length ? dnsChecks : null);
 
   const summaryJson = {
     resolver: RESOLVER_LABEL,
@@ -1204,10 +1245,14 @@ async function runTask({ url, run, blocked, host, category }) {
       maxP95DnsMs: CONFIG.maxP95DnsMs,
       maxFailRate: CONFIG.maxFailRate,
       maxBlockFailed: CONFIG.maxBlockFailed,
+      maxDnsCheckFailRate: CONFIG.maxDnsCheckFailRate,
+      ignoreHttpStatus: CONFIG.ignoreHttpStatus,
     },
     global: stats.global,
     perUrl: stats.perUrl,
     blocked,
+    failures,
+    dnsChecks: CONFIG.dnsDomains.length ? dnsChecks : null,
     thresholdViolations: violations,
     exitCode: violations.length ? 1 : 0,
   };
@@ -1225,6 +1270,7 @@ Files created in ${CONFIG.outDir}:
   summary.json
 
 Resolver ${RESOLVER_LABEL}: ${stats.global.failed}/${stats.global.attempts} pages failed, P95 DNS ${stats.global.dns.p95 ?? '-'} ms
+${failures.advice.map(a => `Why: ${a}`).join('\n')}${CONFIG.dnsDomains.length ? `\nDNS-only checks: ${dnsChecks.failed}/${dnsChecks.total} failed, P95 ${dnsChecks.p95 ?? '-'} ms` : ''}
 Blocked-domain checks: ${blocked.blockedOk} blocked OK, ${blocked.blockFailed} block FAILED (of ${blocked.total})
 ${Object.entries(blocked.perCategory).map(([c, v]) => `  ${c}: ${v.blockedOk}/${v.total} blocked`).join('\n')}
 `);
