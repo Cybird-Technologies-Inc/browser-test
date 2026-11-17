@@ -22,7 +22,8 @@ SG_NAME="browser-test-sg"
 ALARM_NAME="browser-test-heartbeat-missing"
 METRIC_NAMESPACE="BrowserTest"
 METRIC_NAME="RunCompleted"
-RESOLVER_LABEL="${RESOLVER_LABEL:-leohat}"
+# No default: the label names the resolver under test and must be chosen by the operator.
+RESOLVER_LABEL="${RESOLVER_LABEL:-}"
 DRY_ACCOUNT_ID="000000000000"
 
 # Log levels go to stderr so stdout stays clean for values.

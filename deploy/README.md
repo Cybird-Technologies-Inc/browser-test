@@ -2,7 +2,7 @@
 
 This folder deploys one small EC2 instance that runs `npm start` (the light
 profile) every 15 minutes. It measures page-load and DNS timings through the
-LeoHat resolver, stores results in S3 and alerts by email.
+resolver under test, stores results in S3 and alerts by email.
 
 No Terraform. Bash and the AWS CLI v2 only. Every script is safe to run twice.
 
@@ -18,7 +18,7 @@ All names start with `browser-test`. All resources are tagged
 | IAM role + instance profile | `browser-test-instance-role`, `browser-test-instance-profile` | Least-privilege access (see Security) |
 | Security group | `browser-test-sg` | No inbound rules |
 | EC2 instance | `browser-test` (default `t3.small`, Ubuntu 24.04) | Runs the timer |
-| Elastic IP | `browser-test` | Fixed source IP for the LeoHat approved networks |
+| Elastic IP | `browser-test` | Fixed source IP for the resolver's approved networks |
 | CloudWatch alarm | `browser-test-heartbeat-missing` | Fires when no run completed for 45 minutes |
 
 On the instance:
@@ -41,20 +41,20 @@ and CloudWatch add a few cents to about one USD. Check the current AWS prices.
 - AWS CLI v2 and a profile that can create the resources above. Default profile: `Cybird-Dev`.
 - `git`, run from a checkout of this repo.
 - The `deploy/` folder must be **committed**: the release is built with `git archive HEAD`.
-- An email address for alerts, and the IPv4 address of the LeoHat resolver.
+- An email address for alerts, and the IPv4 address of the resolver under test.
 
 ## Environment variables
 
 | Variable | Needed by | Default | Meaning |
 |----------|-----------|---------|---------|
 | `ALERT_EMAIL` | install | none, required | Alert recipient. Never written to the repo |
-| `LEOHAT_DNS_IP` | install | none, required | LeoHat resolver IPv4. Never written to the repo |
+| `RESOLVER_DNS_IP` | install | none, required | resolver under test IPv4. Never written to the repo |
 | `VPC_ID` | install | none, required | VPC to launch in. No default VPC is assumed |
 | `SUBNET_ID` | install | none, required | Public subnet of `VPC_ID` (route to an internet gateway) |
 | `AWS_PROFILE` | all | `Cybird-Dev` | AWS CLI profile |
 | `AWS_REGION` | all | `ap-south-1` | Region |
 | `INSTANCE_TYPE` | install | `t3.small` | Instance size |
-| `RESOLVER_LABEL` | install, update | `leohat` | Metric dimension for the heartbeat. Keep equal to the label in `/etc/browser-test/env` |
+| `RESOLVER_LABEL` | install, update | (none, required) | Metric dimension for the heartbeat. Keep equal to the label in `/etc/browser-test/env` |
 | `ALLOW_DIRTY` | install, update | unset | `1` deploys HEAD even if tracked files have uncommitted changes (they are not included) |
 | `DRY_RUN` | all | unset | `1` prints every action and calls no `aws` command. The account id shows as `000000000000` |
 | `YES` | uninstall | unset | `1` skips the typed confirmation |
@@ -67,15 +67,15 @@ and CloudWatch add a few cents to about one USD. Check the current AWS prices.
 3. Preview, with no AWS calls:
 
    ```bash
-   export ALERT_EMAIL=<your address> LEOHAT_DNS_IP=<resolver ip> VPC_ID=<vpc> SUBNET_ID=<public subnet>
+   export ALERT_EMAIL=<your address> RESOLVER_DNS_IP=<resolver ip> VPC_ID=<vpc> SUBNET_ID=<public subnet>
    DRY_RUN=1 deploy/aws/install.sh
    ```
 
 4. Install for real: `deploy/aws/install.sh`
 5. **Confirm the SNS email.** AWS sends a mail to `ALERT_EMAIL`. Click
    "Confirm subscription". Without this click no alert is delivered.
-6. **Add the Elastic IP to the LeoHat approved networks.** The script prints the
-   IP at the end. LeoHat answers only approved networks, so runs fail until this is done.
+6. **Add the Elastic IP to the resolver's approved networks.** The script prints the
+   IP at the end. The resolver may answer only approved networks, so runs fail until this is done.
 7. Wait 5 to 10 minutes for the first boot.
 
 ## First-run check
@@ -85,10 +85,10 @@ aws ssm start-session --target <instance-id> --profile Cybird-Dev --region ap-so
 sudo tail -n 50 /var/log/browser-test-userdata.log   # setup finished?
 sudo systemctl start browser-test.service            # run once now
 sudo journalctl -u browser-test -n 50 --no-pager
-sudo resolvectl status                               # LeoHat global, VPC resolver for amazonaws.com only
+sudo resolvectl status                               # resolver-under-test global, VPC resolver for amazonaws.com only
 ```
 
-Then check that `s3://<bucket>/results/resolver=leohat/latest.json` exists.
+Then check that `s3://<bucket>/results/resolver=<label>/latest.json` exists.
 After the first completed run the heartbeat alarm turns to OK.
 
 ## Update
@@ -111,8 +111,8 @@ unless you also set `RESOLVER_LABEL` for the install, or the heartbeat alarm wil
 
 ## Heavy profile: on demand only
 
-Do **not** run `heavy-start.env` or `heavy.env` against LeoHat without the
-owner's agreement. LeoHat serves real subscribers. The light `t3.small` is too
+Do **not** run `heavy-start.env` or `heavy.env` against a live ISP resolver without the
+owner's agreement. An ISP resolver serves real subscribers. The light `t3.small` is too
 small for them. If agreed, use a separate, larger, temporary instance, run the
 profile by hand from a shell (never from the timer), and delete the instance after.
 
@@ -139,8 +139,8 @@ the previous commit and run `deploy/aws/update.sh`.
 - To keep the Chromium sandbox working on Ubuntu 24.04, `setup.sh` installs a small AppArmor profile
   that allows user namespaces for the Playwright browser binaries only. The host-wide restriction stays on,
   and the app never runs with `--no-sandbox`.
-- `LEOHAT_DNS_IP` is in the instance user-data (readable by principals with `ec2:DescribeInstanceAttribute`) and in a root-only file. It is not a secret, but it is not public.
-- DNS has no fallback on purpose. If LeoHat is down, runs fail and alert, instead of silently measuring a public resolver. AWS endpoints use the VPC resolver so alerts and uploads still work.
+- `RESOLVER_DNS_IP` is in the instance user-data (readable by principals with `ec2:DescribeInstanceAttribute`) and in a root-only file. It is not a secret, but it is not public.
+- DNS has no fallback on purpose. If the resolver is down, runs fail and alert, instead of silently measuring a public resolver. AWS endpoints use the VPC resolver so alerts and uploads still work.
 - Node is pinned and checked against `SHASUMS256.txt` from the same release.
   This detects corruption, not a compromised nodejs.org.
 
@@ -149,14 +149,14 @@ the previous commit and run `deploy/aws/update.sh`.
 - One instance. If it dies, there are no runs until you re-run `install.sh`; the heartbeat alarm tells you.
 - The heartbeat alarm covers a dead timer or instance. It does not detect a run that exits 0 with useless data.
 - `t3.small` is enough for the light profile only.
-- If the AWS-side DNS bypass or the LeoHat link fails to apply, check `resolvectl status` first.
+- If the AWS-side DNS bypass or the resolver link fails to apply, check `resolvectl status` first.
 - The scripts were written without a live AWS test. Run `DRY_RUN=1` first, and watch the first install.
 
 ## Turn on the feed-category check
 
-The runner can check that each LeoHat feed category (malware, phishing) really blocks. Blocked names are only looked up in DNS, never opened.
+The runner can check that each the resolver feed category (malware, phishing) really blocks. Blocked names are only looked up in DNS, never opened.
 
 1. Open a shell: `aws ssm start-session --target <instance-id>`.
 2. Put real feed names in `/etc/browser-test/blocked.txt` (format in the file; the shield's `client-test-results/<run>/domains.txt` works as is).
-3. In `/etc/browser-test/env`, uncomment `BLOCKED_URLS`, `BLOCK_PAGE_IPS` (LeoHat's sinkhole address or addresses) and `MAX_BLOCK_FAILED=0`.
+3. In `/etc/browser-test/env`, uncomment `BLOCKED_URLS`, `BLOCK_PAGE_IPS` (the resolver's sinkhole address or addresses) and `MAX_BLOCK_FAILED=0`.
 4. Run `sudo systemctl start browser-test.service` and check the S3 `summary.json` (`blocked.perCategory`).

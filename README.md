@@ -6,7 +6,7 @@ request, so a DNS resolver can be load-tested and monitored.
 ## Usage
 
 ```bash
-RESOLVER_LABEL=leohat REPEATS=3 CONCURRENCY=2 MAX_P95_DNS_MS=150 MAX_FAIL_RATE=0.1 npm start
+RESOLVER_LABEL=isp-a REPEATS=3 CONCURRENCY=2 MAX_P95_DNS_MS=150 MAX_FAIL_RATE=0.1 npm start
 ```
 
 Chromium uses the host's DNS resolver, so run it on a machine whose resolver
@@ -87,7 +87,7 @@ Ready-made settings in `profiles/`. Load one with `set -a; . profiles/light.env;
 | `heavy.env` | 10 browsers x 20 repeats | Full load. Reach it by ramping up, never as a first run |
 
 The thresholds in the profiles are starting values: tune them after baseline runs.
-Do not run the heavy profiles against LeoHat without agreement. It serves real subscribers.
+Do not run the heavy profiles against a live ISP resolver without agreement. It serves real subscribers.
 
 ## Deploy
 

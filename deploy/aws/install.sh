@@ -3,11 +3,12 @@
 # Safe to run twice: every step looks up the resource by exact name or tag first.
 #
 # Required env:  ALERT_EMAIL     address that receives alerts (never stored in the repo)
-#                LEOHAT_DNS_IP   IPv4 of the LeoHat resolver (never stored in the repo)
+#                RESOLVER_DNS_IP   IPv4 of the resolver under test (never stored in the repo)
+#                RESOLVER_LABEL  short name of the resolver under test, for example the ISP name
 #                VPC_ID          VPC to launch in (no default VPC is assumed)
 #                SUBNET_ID       public subnet in that VPC (route to an internet gateway)
 # Optional env:  AWS_PROFILE (Cybird-Dev), AWS_REGION (ap-south-1), INSTANCE_TYPE (t3.small),
-#                RESOLVER_LABEL (leohat), ALLOW_DIRTY=1, DRY_RUN=1 (no aws call at all)
+#                ALLOW_DIRTY=1, DRY_RUN=1 (no aws call at all)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,11 +16,20 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$HERE/common.sh"
 
 need_env ALERT_EMAIL "Set it to the address that should receive alerts, for example: export ALERT_EMAIL=you@your-domain"
-need_env LEOHAT_DNS_IP "Set it to the IPv4 address of the LeoHat resolver, for example: export LEOHAT_DNS_IP=<ip>"
+# Deprecated name from the first version of this script; remove after one release.
+if [ -z "${RESOLVER_DNS_IP:-}" ] && [ -n "${LEOHAT_DNS_IP:-}" ]; then
+  warn "LEOHAT_DNS_IP is deprecated. Use RESOLVER_DNS_IP."
+  RESOLVER_DNS_IP="$LEOHAT_DNS_IP"
+fi
+need_env RESOLVER_LABEL "Set it to a short name for the resolver under test, for example: export RESOLVER_LABEL=<isp-name>"
+if ! printf '%s' "$RESOLVER_LABEL" | grep -Eq '^[A-Za-z0-9_-]{1,40}$'; then
+  die "RESOLVER_LABEL may only contain letters, digits, - and _ (max 40)."
+fi
+need_env RESOLVER_DNS_IP "Set it to the IPv4 address of the resolver under test, for example: export RESOLVER_DNS_IP=<ip>"
 need_env VPC_ID "Set it to the VPC to launch in (aws ec2 describe-vpcs). The script never assumes a default VPC."
 need_env SUBNET_ID "Set it to a public subnet of VPC_ID (aws ec2 describe-subnets): it needs a route to an internet gateway."
-if ! printf '%s' "$LEOHAT_DNS_IP" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
-  die "LEOHAT_DNS_IP must be a plain IPv4 address."
+if ! printf '%s' "$RESOLVER_DNS_IP" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
+  die "RESOLVER_DNS_IP must be a plain IPv4 address."
 fi
 case "$ALERT_EMAIL" in *@*.*) ;; *) die "ALERT_EMAIL does not look like an email address." ;; esac
 
@@ -162,8 +172,8 @@ write_user_data() {
 set -euo pipefail
 exec > >(tee -a /var/log/browser-test-userdata.log) 2>&1
 install -d -m 0755 /etc/browser-test
-install -m 0600 /dev/null /etc/browser-test/leohat-dns
-printf '%s\n' '${LEOHAT_DNS_IP}' > /etc/browser-test/leohat-dns
+install -m 0600 /dev/null /etc/browser-test/resolver-dns
+printf '%s\n' '${RESOLVER_DNS_IP}' > /etc/browser-test/resolver-dns
 printf '%s\n' '${BUCKET}' > /etc/browser-test/bucket
 printf '%s\n' '${TOPIC_ARN}' > /etc/browser-test/sns-topic-arn
 printf '%s\n' '${AWS_REGION}' > /etc/browser-test/region
@@ -254,7 +264,7 @@ cat >&2 <<OUT
 
 Done$(is_dry && echo " (DRY_RUN: nothing was created)").
   Elastic IP : ${EIP:-n/a}
-               -> Add this IP to the LeoHat approved networks. Until then LeoHat will not answer and runs will fail.
+               -> Add this IP to the resolver's approved networks. Until then the resolver will not answer and runs will fail.
   Instance   : ${INSTANCE_ID:-n/a}   (first boot takes about 5 to 10 minutes)
   Bucket     : ${BUCKET}
   Shell      : aws ssm start-session --target ${INSTANCE_ID:-<instance-id>} --profile ${AWS_PROFILE} --region ${AWS_REGION}

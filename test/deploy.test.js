@@ -48,7 +48,8 @@ function runInstall(extraEnv, removeKeys = []) {
       DRY_RUN: '1',
       ALLOW_DIRTY: '1',
       ALERT_EMAIL: 'ops@example.invalid',
-      LEOHAT_DNS_IP: '192.0.2.1',
+      RESOLVER_DNS_IP: '192.0.2.1',
+      RESOLVER_LABEL: 'isp-example',
       VPC_ID: 'vpc-00000000',
       SUBNET_ID: 'subnet-00000000',
       ...extraEnv,
@@ -73,7 +74,7 @@ test('install.sh DRY_RUN exits 0, prints the plan and never calls aws', () => {
 });
 
 test('install.sh names the missing variable and does not call aws', () => {
-  for (const name of ['ALERT_EMAIL', 'LEOHAT_DNS_IP', 'VPC_ID', 'SUBNET_ID']) {
+  for (const name of ['ALERT_EMAIL', 'RESOLVER_DNS_IP', 'RESOLVER_LABEL', 'VPC_ID', 'SUBNET_ID']) {
     const { r, called } = runInstall({}, [name]);
     assert.notStrictEqual(r.status, 0);
     assert.match(r.stderr, new RegExp(name));
@@ -82,9 +83,22 @@ test('install.sh names the missing variable and does not call aws', () => {
 });
 
 test('install.sh rejects a malformed DNS IP (hostile input)', () => {
-  const { r } = runInstall({ LEOHAT_DNS_IP: "1.2.3.4'; rm -rf /" });
+  const { r } = runInstall({ RESOLVER_DNS_IP: "1.2.3.4'; rm -rf /" });
   assert.notStrictEqual(r.status, 0);
-  assert.match(r.stderr, /LEOHAT_DNS_IP/);
+  assert.match(r.stderr, /RESOLVER_DNS_IP/);
+});
+
+test('install.sh accepts the deprecated LEOHAT_DNS_IP name with a warning', () => {
+  const { r, called } = runInstall({ LEOHAT_DNS_IP: '192.0.2.9' }, ['RESOLVER_DNS_IP']);
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.match(r.stderr + r.stdout, /deprecated/i);
+  assert.strictEqual(called, false);
+});
+
+test('install.sh rejects a hostile resolver label', () => {
+  const { r } = runInstall({ RESOLVER_LABEL: "a'; rm -rf /" });
+  assert.notStrictEqual(r.status, 0);
+  assert.match(r.stderr, /RESOLVER_LABEL/);
 });
 
 test('repo holds no alert email or resolver IP values', () => {

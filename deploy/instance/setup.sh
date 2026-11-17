@@ -106,7 +106,7 @@ if [ ! -f "$CONF_DIR/env" ]; then
     echo "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH"
     # Feed-category check: off until the operator fills the list and the sinkhole IP.
     echo "# BLOCKED_URLS=$CONF_DIR/blocked.txt"
-    echo "# BLOCK_PAGE_IPS=<LeoHat sinkhole IPv4,IPv6>"
+    echo "# BLOCK_PAGE_IPS=<the resolver sinkhole IPv4,IPv6>"
     echo "# MAX_BLOCK_FAILED=0"
   } >"$CONF_DIR/env"
   chmod 0644 "$CONF_DIR/env"
@@ -126,24 +126,28 @@ systemctl enable --now browser-test.timer
 
 # --- 7. DNS, LAST ---
 # Last on purpose: apt, npm and the Node download above need a working resolver.
-# From here on the host resolves through LeoHat, so a failure leaves the box on its old DNS.
-[ -s "$CONF_DIR/leohat-dns" ] || die "$CONF_DIR/leohat-dns is missing or empty. DNS was not changed."
-LEOHAT_DNS_IP="$(tr -d '[:space:]' <"$CONF_DIR/leohat-dns")"
-printf '%s' "$LEOHAT_DNS_IP" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || die "$CONF_DIR/leohat-dns does not hold an IPv4 address. DNS was not changed."
+# From here on the host resolves through the resolver under test, so a failure leaves the box on its old DNS.
+# resolver-dns replaces the first version's leohat-dns file; accept both so an update
+# on an already installed box keeps working.
+DNS_FILE="$CONF_DIR/resolver-dns"
+[ -s "$DNS_FILE" ] || { [ -s "$CONF_DIR/leohat-dns" ] && DNS_FILE="$CONF_DIR/leohat-dns" && log WARN "Using legacy $DNS_FILE; re-run install to write resolver-dns."; }
+[ -s "$DNS_FILE" ] || die "$CONF_DIR/resolver-dns is missing or empty. DNS was not changed."
+RESOLVER_DNS_IP="$(tr -d '[:space:]' <"$DNS_FILE")"
+printf '%s' "$RESOLVER_DNS_IP" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || die "$DNS_FILE does not hold an IPv4 address. DNS was not changed."
 systemctl is-active --quiet systemd-resolved || die "systemd-resolved is not running; this script only supports it. DNS was not changed."
 
 install -d -m 0755 /etc/systemd/resolved.conf.d
 # FallbackDNS is EMPTY on purpose: a silent fallback to a public resolver would hide a
-# LeoHat outage and produce good-looking results that do not measure LeoHat.
+# resolver outage and produce good-looking results that do not measure the resolver under test.
 cat >/etc/systemd/resolved.conf.d/browser-test.conf <<CONF
-# Managed by deploy/instance/setup.sh. All names go to LeoHat, with no fallback.
+# Managed by deploy/instance/setup.sh. All names go to the resolver under test, with no fallback.
 [Resolve]
-DNS=$LEOHAT_DNS_IP
+DNS=$RESOLVER_DNS_IP
 Domains=~.
 FallbackDNS=
 CONF
 
-# AWS endpoints bypass LeoHat so uploads and alerts still work when LeoHat is down.
+# AWS endpoints bypass the resolver under test so uploads and alerts still work when the resolver is down.
 # The longest matching routing domain wins, so ~amazonaws.com beats the global ~. .
 # default-route=no keeps the VPC resolver from also answering everything else.
 VPC_DNS=169.254.169.253
@@ -181,6 +185,6 @@ else
   log WARN "AWS endpoint did not resolve after the DNS change. Uploads and alerts will fail until fixed: check 'resolvectl status'."
 fi
 getent hosts example.com >/dev/null \
-  && log INFO "LeoHat resolves example.com" \
-  || log WARN "LeoHat did not answer example.com. Is this host's Elastic IP in the LeoHat approved networks? Runs will fail until it is."
+  && log INFO "the resolver resolves example.com" \
+  || log WARN "the resolver did not answer example.com. Is this host's Elastic IP in the resolver's approved networks? Runs will fail until it is."
 log INFO "Setup finished for release $(basename "$RELEASE_DIR")"
