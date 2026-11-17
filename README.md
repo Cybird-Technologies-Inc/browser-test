@@ -62,6 +62,20 @@ percentiles or the failure rate.
 | `1` | `MAX_P95_DNS_MS`, `MAX_FAIL_RATE` or `MAX_BLOCK_FAILED` exceeded (the message says which) |
 | `2` | Invalid configuration (all problems are listed) |
 
+### Example profiles
+
+Ready-made settings in `profiles/`. Load one with `set -a; . profiles/light.env; set +a`
+(or a systemd `EnvironmentFile=`), and set `RESOLVER_LABEL` yourself.
+
+| File | Load | Use |
+|------|------|-----|
+| `light.env` | 1 browser x 1 pass | Scheduled monitoring, about every 15 minutes |
+| `heavy-start.env` | 2 browsers x 5 repeats | First step of an on-demand load test |
+| `heavy.env` | 10 browsers x 20 repeats | Full load. Reach it by ramping up, never as a first run |
+
+The thresholds in the profiles are starting values: tune them after baseline runs.
+Do not run the heavy profiles against LeoHat without agreement. It serves real subscribers.
+
 ## Development setup
 
 Requires Node 22 or newer (`nvm use` reads `.nvmrc`).
