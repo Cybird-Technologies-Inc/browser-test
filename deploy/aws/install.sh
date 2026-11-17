@@ -4,6 +4,8 @@
 #
 # Required env:  ALERT_EMAIL     address that receives alerts (never stored in the repo)
 #                LEOHAT_DNS_IP   IPv4 of the LeoHat resolver (never stored in the repo)
+#                VPC_ID          VPC to launch in (no default VPC is assumed)
+#                SUBNET_ID       public subnet in that VPC (route to an internet gateway)
 # Optional env:  AWS_PROFILE (Cybird-Dev), AWS_REGION (ap-south-1), INSTANCE_TYPE (t3.small),
 #                RESOLVER_LABEL (leohat), ALLOW_DIRTY=1, DRY_RUN=1 (no aws call at all)
 set -euo pipefail
@@ -14,6 +16,8 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 need_env ALERT_EMAIL "Set it to the address that should receive alerts, for example: export ALERT_EMAIL=you@your-domain"
 need_env LEOHAT_DNS_IP "Set it to the IPv4 address of the LeoHat resolver, for example: export LEOHAT_DNS_IP=<ip>"
+need_env VPC_ID "Set it to the VPC to launch in (aws ec2 describe-vpcs). The script never assumes a default VPC."
+need_env SUBNET_ID "Set it to a public subnet of VPC_ID (aws ec2 describe-subnets): it needs a route to an internet gateway."
 if ! printf '%s' "$LEOHAT_DNS_IP" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
   die "LEOHAT_DNS_IP must be a plain IPv4 address."
 fi
@@ -135,10 +139,10 @@ step_iam() {
 step_sg() {
   info "Step 4: security group $SG_NAME (no inbound rules)"
   SG_ID="sg-dryrun"
-  mut "look up the default VPC, create security group $SG_NAME with NO inbound rules (egress stays open for DNS, HTTPS)" || return 0
-  local vpc
-  vpc="$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)"
-  [ -n "$vpc" ] && [ "$vpc" != "None" ] || die "No default VPC in $AWS_REGION. Create one (aws ec2 create-default-vpc) or extend this script."
+  mut "check SUBNET_ID belongs to VPC_ID, create security group $SG_NAME in $VPC_ID with NO inbound rules (egress stays open for DNS, HTTPS)" || return 0
+  local vpc="$VPC_ID" subnet_vpc
+  subnet_vpc="$(aws ec2 describe-subnets --subnet-ids "$SUBNET_ID" --query 'Subnets[0].VpcId' --output text)"
+  [ "$subnet_vpc" = "$vpc" ] || die "SUBNET_ID $SUBNET_ID is in $subnet_vpc, not in VPC_ID $vpc. Pick a subnet of that VPC."
   SG_ID="$(aws ec2 describe-security-groups --filters "${TAG_FILTERS[@]}" "Name=vpc-id,Values=$vpc" --query 'SecurityGroups[0].GroupId' --output text)"
   if [ "$SG_ID" = "None" ] || [ -z "$SG_ID" ]; then
     SG_ID="$(aws ec2 create-security-group --group-name "$SG_NAME" --description "browser-test runner: no inbound" \
@@ -163,7 +167,8 @@ printf '%s\n' '${LEOHAT_DNS_IP}' > /etc/browser-test/leohat-dns
 printf '%s\n' '${BUCKET}' > /etc/browser-test/bucket
 printf '%s\n' '${TOPIC_ARN}' > /etc/browser-test/sns-topic-arn
 printf '%s\n' '${AWS_REGION}' > /etc/browser-test/region
-chmod 0644 /etc/browser-test/bucket /etc/browser-test/sns-topic-arn /etc/browser-test/region
+printf '%s\n' '${RESOLVER_LABEL}' > /etc/browser-test/resolver-label
+chmod 0644 /etc/browser-test/bucket /etc/browser-test/sns-topic-arn /etc/browser-test/region /etc/browser-test/resolver-label
 export DEBIAN_FRONTEND=noninteractive
 export AWS_DEFAULT_REGION='${AWS_REGION}'
 apt-get update -y
@@ -196,7 +201,7 @@ step_instance() {
   mut "launch ONE $INSTANCE_TYPE instance: IMDSv2 required, hop limit 1, encrypted gp3 20 GB root, no key pair, profile $PROFILE_NAME, security group $SG_NAME" || return 0
   ami="$(aws ssm get-parameter --name "$AMI_PARAM" --query Parameter.Value --output text)"
   INSTANCE_ID="$(aws ec2 run-instances --image-id "$ami" --instance-type "$INSTANCE_TYPE" --count 1 \
-    --iam-instance-profile "Name=$PROFILE_NAME" --security-group-ids "$SG_ID" \
+    --iam-instance-profile "Name=$PROFILE_NAME" --security-group-ids "$SG_ID" --subnet-id "$SUBNET_ID" \
     --metadata-options HttpTokens=required,HttpPutResponseHopLimit=1,HttpEndpoint=enabled \
     --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=20,VolumeType=gp3,Encrypted=true,DeleteOnTermination=true}' \
     --user-data "file://$ud" \

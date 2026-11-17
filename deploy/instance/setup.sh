@@ -101,7 +101,7 @@ if [ ! -f "$CONF_DIR/env" ]; then
   log INFO "Writing $CONF_DIR/env from profiles/light.env (first install only)"
   {
     cat "$RELEASE_DIR/profiles/light.env"
-    echo "RESOLVER_LABEL=leohat"
+    echo "RESOLVER_LABEL=$(cat "$CONF_DIR/resolver-label")"
     echo "OUT_DIR=$STATE_DIR/out"
     echo "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH"
     # Feed-category check: off until the operator fills the list and the sinkhole IP.

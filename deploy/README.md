@@ -49,6 +49,8 @@ and CloudWatch add a few cents to about one USD. Check the current AWS prices.
 |----------|-----------|---------|---------|
 | `ALERT_EMAIL` | install | none, required | Alert recipient. Never written to the repo |
 | `LEOHAT_DNS_IP` | install | none, required | LeoHat resolver IPv4. Never written to the repo |
+| `VPC_ID` | install | none, required | VPC to launch in. No default VPC is assumed |
+| `SUBNET_ID` | install | none, required | Public subnet of `VPC_ID` (route to an internet gateway) |
 | `AWS_PROFILE` | all | `Cybird-Dev` | AWS CLI profile |
 | `AWS_REGION` | all | `ap-south-1` | Region |
 | `INSTANCE_TYPE` | install | `t3.small` | Instance size |
@@ -65,7 +67,7 @@ and CloudWatch add a few cents to about one USD. Check the current AWS prices.
 3. Preview, with no AWS calls:
 
    ```bash
-   export ALERT_EMAIL=<your address> LEOHAT_DNS_IP=<resolver ip>
+   export ALERT_EMAIL=<your address> LEOHAT_DNS_IP=<resolver ip> VPC_ID=<vpc> SUBNET_ID=<public subnet>
    DRY_RUN=1 deploy/aws/install.sh
    ```
 
