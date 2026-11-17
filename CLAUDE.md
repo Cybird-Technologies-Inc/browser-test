@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`browser-test.js` is a single-file Playwright (Chromium) page-load timer. It measures DNS, TTFB and load time per request. It is used to load-test and monitor a DNS resolver (the "LeoHat" ISP resolver) and to compare resolvers. The README is only a one-line stub.
+`browser-test.js` is a Playwright (Chromium) page-load timer. It measures DNS, TTFB and load time per request. It is used to load-test and monitor a DNS resolver (the "LeoHat" ISP resolver) and to compare resolvers. The README has usage, the env-var table and exit codes.
 
 ## Commands
 
@@ -12,13 +12,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Run: `npm start`. Output goes to `page-summary.csv` and `request-details.csv` (gitignored).
 - All checks: `npm run verify` (syntax check, ESLint, tests). Also run `npm audit --audit-level=high`; CI runs both. Do not call `npm audit` from an npm script: a user-level `allow-scripts` in `~/.npmrc` makes npm 12 reject it.
 - Single test file: `node --test test/<file>.test.js`.
-- Enable the pre-commit hook once per clone: `npm run setup` (secret scan, syntax, tests).
+- Enable the pre-commit hook once per clone: `npm run setup` (secret scan, syntax, lint, tests).
 - Lint: `npm run lint` (ESLint 9 flat config, `eslint.config.js`). No formatter; ask before adding Prettier.
 
 ## Architecture
 
 - `lib.js` holds the pure, unit-tested logic: stats helpers, `loadConfig(env, fs)`, blocked-domain classification, `summarizeResults`, `checkThresholds`. Put new logic there so `node:test` can reach it without a browser.
-- `browser-test.js` is the Playwright part: `testPage(browser, url, run)` collects per-request timings, `testPageIsolated` gives each page its own browser plus a hard timeout, and the main block runs a worker pool (`CONCURRENCY`), writes the CSVs and `summary.json`, and sets the exit code (0 ok, 1 threshold, 2 config).
+- `browser-test.js` is the Playwright part: `testPage(browser, url, run)` collects per-request timings, `testPageIsolated` gives each page its own browser plus a hard timeout, and the main block runs a worker pool (`CONCURRENCY`), writes the CSVs and `summary.json`, and sets the exit code (0 ok, 1 threshold incl. `MAX_BLOCK_FAILED`, 2 config).
 - Config is env-var only (table in the README). New CSV columns are appended after the existing ones so downstream readers keep working.
 - Chromium uses the OS resolver, so results reflect whatever resolver the host is configured with. Running from WSL does not test LeoHat: its resolver and IP are different, and LeoHat only answers approved networks.
 

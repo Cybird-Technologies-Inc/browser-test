@@ -30,17 +30,20 @@ Every variable is optional. Defaults equal the old hardcoded values.
 | `MAX_P95_DNS_MS` | unset | Fail if the global P95 DNS (ms) is above this |
 | `MAX_FAIL_RATE` | unset | Fail if failed pages / attempts (0 to 1) is above this |
 | `BLOCKED_URLS` | unset | Same format as `URLS`. Domains the resolver should block |
+| `MAX_BLOCK_FAILED` | unset | Fail if more than this many blocked domains were answered. Use `0` whenever `BLOCKED_URLS` is set |
 | `BLOCK_PAGE_IPS` | unset | Comma list of IPs your block page is served from |
 | `BLOCK_PAGE_PATTERN` | unset | Case-insensitive regex matched against the page text of a block page |
 
-A page counts as **failed** if it throws, times out, or gets no main response.
-HTTP 4xx/5xx with a response is not a failure.
+A page counts as **failed** if it throws, times out, gets no main response, or
+answers with HTTP 4xx or 5xx (the convention of common uptime monitors). Some
+sites answer headless browsers with 4xx (for example LinkedIn); drop such sites
+from `URLS` or the failure rate will never reach 0.
 
 ### Blocked domains
 
 For each `BLOCKED_URLS` entry: NXDOMAIN, an answer from `BLOCK_PAGE_IPS`, or page
 text matching `BLOCK_PAGE_PATTERN` is **blocked OK**. Anything else, including a
-real page, is **block FAILED**. Without `BLOCK_PAGE_IPS` or `BLOCK_PAGE_PATTERN`
+real page, is **block FAILED**. LeoHat has no block page defined yet, so only NXDOMAIN counts. Without `BLOCK_PAGE_IPS` or `BLOCK_PAGE_PATTERN`
 a block page cannot be recognised. Blocked URLs never count in the DNS
 percentiles or the failure rate.
 
@@ -56,7 +59,7 @@ percentiles or the failure rate.
 | Code | Meaning |
 |------|---------|
 | `0` | Run finished, no threshold exceeded |
-| `1` | `MAX_P95_DNS_MS` or `MAX_FAIL_RATE` exceeded (the message says which) |
+| `1` | `MAX_P95_DNS_MS`, `MAX_FAIL_RATE` or `MAX_BLOCK_FAILED` exceeded (the message says which) |
 | `2` | Invalid configuration (all problems are listed) |
 
 ## Development setup
