@@ -18,7 +18,7 @@ TOPIC_ARN="arn:aws:sns:${AWS_REGION}:${ACCOUNT_ID}:${TOPIC_NAME}"
 if is_dry; then
   cat >&2 <<PLAN
 DRY_RUN would: look up by tag ($TAG_PROJECT_KEY=$TAG_PROJECT_VAL, $TAG_MANAGED_KEY=$TAG_MANAGED_VAL) or exact name, then delete:
-DRY_RUN would: - CloudWatch alarm $ALARM_NAME
+DRY_RUN would: - every CloudWatch alarm whose name starts with ${ALARM_PREFIX} (one per target, plus the legacy one)
 DRY_RUN would: - EC2 instance(s) with those tags (terminate), then the tagged Elastic IP (release)
 DRY_RUN would: - security group $SG_NAME (tagged)
 DRY_RUN would: - instance profile $PROFILE_NAME and role $ROLE_NAME (with its policies), if tagged
@@ -42,7 +42,8 @@ INSTANCES="$(aws ec2 describe-instances --filters "${TAG_FILTERS[@]}" \
   --query 'Reservations[].Instances[].InstanceId' --output text | norm)"
 EIPS="$(aws ec2 describe-addresses --filters "${TAG_FILTERS[@]}" --query 'Addresses[].AllocationId' --output text | norm)"
 SGS="$(aws ec2 describe-security-groups --filters "${TAG_FILTERS[@]}" --query 'SecurityGroups[].GroupId' --output text | norm)"
-ALARM="$(aws cloudwatch describe-alarms --alarm-names "$ALARM_NAME" --query 'MetricAlarms[0].AlarmName' --output text | norm)"
+# Prefix match: one alarm per target label, and the legacy browser-test-heartbeat-missing.
+ALARM="$(aws cloudwatch describe-alarms --alarm-name-prefix "$ALARM_PREFIX" --query 'MetricAlarms[].AlarmName' --output text | norm)"
 
 ROLE=""
 if tags="$(aws iam list-role-tags --role-name "$ROLE_NAME" --query 'Tags[].[Key,Value]' --output text 2>/dev/null)" && has_tags "$tags"; then ROLE="$ROLE_NAME"; fi
@@ -56,7 +57,7 @@ if [ "${PURGE_BUCKET:-0}" = "1" ]; then
 fi
 
 echo "The following resources (account $ACCOUNT_ID, region $AWS_REGION) will be DELETED:" >&2
-printf '  alarm            : %s\n  instances        : %s\n  elastic ip ids   : %s\n  security groups  : %s\n  instance profile : %s\n  iam role         : %s\n  sns topic        : %s\n  bucket           : %s\n' \
+printf '  alarms           : %s\n  instances        : %s\n  elastic ip ids   : %s\n  security groups  : %s\n  instance profile : %s\n  iam role         : %s\n  sns topic        : %s\n  bucket           : %s\n' \
   "${ALARM:--}" "${INSTANCES:--}" "${EIPS:--}" "${SGS:--}" "${PROFILE:--}" "${ROLE:--}" "${TOPIC:--}" "${BUCKET_DEL:-- (kept)}" >&2
 
 if [ -z "$ALARM$INSTANCES$EIPS$SGS$PROFILE$ROLE$TOPIC$BUCKET_DEL" ]; then info "Nothing to delete."; exit 0; fi
@@ -69,7 +70,11 @@ if [ "${YES:-0}" != "1" ]; then
 fi
 
 # --- Delete (order matters: dependants first) ---
-[ -z "$ALARM" ] || { info "Deleting alarm"; aws cloudwatch delete-alarms --alarm-names "$ALARM"; }
+if [ -n "$ALARM" ]; then
+  info "Deleting alarms"
+  # shellcheck disable=SC2086
+  aws cloudwatch delete-alarms --alarm-names $ALARM
+fi
 
 if [ -n "$INSTANCES" ]; then
   info "Terminating $INSTANCES"

@@ -19,7 +19,10 @@ TOPIC_NAME="browser-test-alerts"
 ROLE_NAME="browser-test-instance-role"
 PROFILE_NAME="browser-test-instance-profile"
 SG_NAME="browser-test-sg"
-ALARM_NAME="browser-test-heartbeat-missing"
+# One heartbeat alarm per resolver label: browser-test-heartbeat-<label>.
+# LEGACY_ALARM_NAME is the single-target name from the first version (migration only).
+ALARM_PREFIX="browser-test-heartbeat-"
+LEGACY_ALARM_NAME="browser-test-heartbeat-missing"
 METRIC_NAMESPACE="BrowserTest"
 METRIC_NAME="RunCompleted"
 # No default: the label names the resolver under test and must be chosen by the operator.
@@ -118,4 +121,54 @@ package_release() {
 fetch_and_setup_cmd() {
   local b="$1" sha="$2" d="/opt/browser-test/$2"
   printf '%s' "mkdir -p /opt/browser-test/releases && aws s3 cp s3://${b}/releases/browser-test-${sha}.tgz /opt/browser-test/releases/ --only-show-errors && rm -rf ${d}.tmp && mkdir -p ${d}.tmp && tar -xzf /opt/browser-test/releases/browser-test-${sha}.tgz -C ${d}.tmp && if [ -d ${d} ]; then rm -rf ${d}.tmp; else mv ${d}.tmp ${d}; fi && bash ${d}/deploy/instance/setup.sh"
+}
+
+# Label = target file name on the instance and the metric dimension. Strict on purpose:
+# it ends up in file names, S3 keys and shell commands.
+valid_label() { printf '%s' "${1:-}" | grep -Eq '^[A-Za-z0-9_-]{1,40}$'; }
+valid_ipv4() {
+  printf '%s' "${1:-}" | grep -Eq '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+  local o; for o in ${1//./ }; do [ "$o" -le 255 ] || return 1; done
+}
+
+# Creates or updates the heartbeat alarm of one label. Needs TOPIC_ARN.
+# Missing data counts as breaching: a dead timer sends no metric, and that must alert.
+put_heartbeat_alarm() {
+  local label="$1"
+  mut "put alarm ${ALARM_PREFIX}${label}: $METRIC_NAMESPACE/$METRIC_NAME Resolver=$label, period 900 s x 3, missing data = breaching, action = SNS topic" || return 0
+  aws cloudwatch put-metric-alarm --alarm-name "${ALARM_PREFIX}${label}" \
+    --alarm-description "No browser-test run completed for resolver '$label' in 45 minutes (timer, instance or target is down)" \
+    --namespace "$METRIC_NAMESPACE" --metric-name "$METRIC_NAME" --dimensions "Name=Resolver,Value=$label" \
+    --statistic Sum --period 900 --evaluation-periods 3 --threshold 1 \
+    --comparison-operator LessThanThreshold --treat-missing-data breaching \
+    --alarm-actions "$TOPIC_ARN" --ok-actions "$TOPIC_ARN" \
+    --tags "Key=${TAG_PROJECT_KEY},Value=${TAG_PROJECT_VAL}" "Key=${TAG_MANAGED_KEY},Value=${TAG_MANAGED_VAL}"
+}
+
+# Instance lookup for scripts that act on a running instance (add/remove target).
+require_instance() {
+  INSTANCE_ID="i-dryrun"
+  is_dry && return 0
+  INSTANCE_ID="$(find_instance)"
+  [ -n "$INSTANCE_ID" ] && [ "$INSTANCE_ID" != "None" ] \
+    || die "No browser-test instance found (tags $TAG_PROJECT_KEY=$TAG_PROJECT_VAL, $TAG_MANAGED_KEY=$TAG_MANAGED_VAL). Run deploy/aws/install.sh first."
+}
+
+# Runs one shell command line as root on the instance via SSM and waits. Needs INSTANCE_ID.
+# Output goes to stderr (tail); returns non-zero unless the command succeeded.
+ssm_run() {
+  local cmd="$1" params id status="Pending"
+  params="$(mktemp)"
+  printf '{"commands":["%s"]}\n' "$cmd" >"$params"
+  id="$(aws ssm send-command --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript \
+    --parameters "file://$params" --query Command.CommandId --output text)" || { rm -f "$params"; return 1; }
+  rm -f "$params"
+  for _ in $(seq 1 60); do
+    sleep 5
+    status="$(aws ssm get-command-invocation --command-id "$id" --instance-id "$INSTANCE_ID" --query Status --output text 2>/dev/null || echo Pending)"
+    case "$status" in Success|Failed|Cancelled|TimedOut) break ;; esac
+  done
+  aws ssm get-command-invocation --command-id "$id" --instance-id "$INSTANCE_ID" \
+    --query '[StandardOutputContent,StandardErrorContent]' --output text | tail -n 10 >&2 || true
+  [ "$status" = "Success" ]
 }

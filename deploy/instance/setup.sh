@@ -101,7 +101,6 @@ if [ ! -f "$CONF_DIR/env" ]; then
   log INFO "Writing $CONF_DIR/env from profiles/light.env (first install only)"
   {
     cat "$RELEASE_DIR/profiles/light.env"
-    echo "RESOLVER_LABEL=$(cat "$CONF_DIR/resolver-label")"
     echo "OUT_DIR=$STATE_DIR/out"
     echo "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH"
     # Feed-category check: off until the operator fills the list and the sinkhole IP.
@@ -116,6 +115,22 @@ fi
 
 # Template for the feed-category list; never overwrites the operator's copy.
 [ -f "$CONF_DIR/blocked.txt" ] || install -m 0644 "$RELEASE_DIR/profiles/blocked.example.txt" "$CONF_DIR/blocked.txt"
+
+# --- 5b. Targets: one file per resolver under test ---
+# Migration: an instance from the single-target version has no targets/. Build one target
+# from its legacy files so an update keeps monitoring. Existing target files are never touched.
+install -d -m 0755 "$CONF_DIR/targets"
+if ! compgen -G "$CONF_DIR/targets/*.env" >/dev/null; then
+  legacy_ip_file="$CONF_DIR/resolver-dns"; [ -s "$legacy_ip_file" ] || legacy_ip_file="$CONF_DIR/leohat-dns"
+  legacy_label="$(cat "$CONF_DIR/resolver-label" 2>/dev/null || sed -n 's/^RESOLVER_LABEL=//p' "$CONF_DIR/env" | head -n1)"
+  if [ -s "$legacy_ip_file" ] && [[ "$legacy_label" =~ ^[A-Za-z0-9_-]{1,40}$ ]]; then
+    log INFO "Creating target '$legacy_label' from the legacy single-target files"
+    printf 'RESOLVER_DNS_IP=%s\n' "$(tr -d '[:space:]' <"$legacy_ip_file")" >"$CONF_DIR/targets/$legacy_label.env"
+    chmod 0644 "$CONF_DIR/targets/$legacy_label.env"
+  else
+    log WARN "No target files and no usable legacy files. Add a target with deploy/aws/add-target.sh; runs fail until then."
+  fi
+fi
 
 # --- 6. systemd units ---
 for u in browser-test.service browser-test.timer browser-test-alert.service; do

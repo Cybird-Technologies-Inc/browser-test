@@ -179,6 +179,12 @@ printf '%s\n' '${TOPIC_ARN}' > /etc/browser-test/sns-topic-arn
 printf '%s\n' '${AWS_REGION}' > /etc/browser-test/region
 printf '%s\n' '${RESOLVER_LABEL}' > /etc/browser-test/resolver-label
 chmod 0644 /etc/browser-test/bucket /etc/browser-test/sns-topic-arn /etc/browser-test/region /etc/browser-test/resolver-label
+# First target: one file per resolver under test. More are added with deploy/aws/add-target.sh.
+install -d -m 0755 /etc/browser-test/targets
+if [ ! -f '/etc/browser-test/targets/${RESOLVER_LABEL}.env' ]; then
+  printf 'RESOLVER_DNS_IP=%s\n' '${RESOLVER_DNS_IP}' > '/etc/browser-test/targets/${RESOLVER_LABEL}.env'
+  chmod 0644 '/etc/browser-test/targets/${RESOLVER_LABEL}.env'
+fi
 export DEBIAN_FRONTEND=noninteractive
 export AWS_DEFAULT_REGION='${AWS_REGION}'
 apt-get update -y
@@ -240,16 +246,14 @@ step_eip() {
 }
 
 step_alarm() {
-  info "Step 7: heartbeat alarm $ALARM_NAME"
-  # Missing data counts as breaching: a dead timer sends no metric, and that must alert.
-  mut "put alarm $ALARM_NAME: $METRIC_NAMESPACE/$METRIC_NAME Resolver=$RESOLVER_LABEL, period 900 s x 3, missing data = breaching, action = SNS topic" || return 0
-  aws cloudwatch put-metric-alarm --alarm-name "$ALARM_NAME" \
-    --alarm-description "No browser-test run completed in 45 minutes (timer or instance is down)" \
-    --namespace "$METRIC_NAMESPACE" --metric-name "$METRIC_NAME" --dimensions "Name=Resolver,Value=$RESOLVER_LABEL" \
-    --statistic Sum --period 900 --evaluation-periods 3 --threshold 1 \
-    --comparison-operator LessThanThreshold --treat-missing-data breaching \
-    --alarm-actions "$TOPIC_ARN" --ok-actions "$TOPIC_ARN" \
-    --tags "${TAGS[@]}"
+  info "Step 7: heartbeat alarm ${ALARM_PREFIX}${RESOLVER_LABEL}"
+  put_heartbeat_alarm "$RESOLVER_LABEL"
+  # Migration: the first version had one alarm named browser-test-heartbeat-missing.
+  # It is replaced by the per-label alarm above, so remove it (by exact name) if present.
+  mut "delete legacy alarm $LEGACY_ALARM_NAME if it exists" || return 0
+  if [ "$(aws cloudwatch describe-alarms --alarm-names "$LEGACY_ALARM_NAME" --query 'length(MetricAlarms)' --output text)" != "0" ]; then
+    aws cloudwatch delete-alarms --alarm-names "$LEGACY_ALARM_NAME"
+  fi
 }
 
 step_bucket
