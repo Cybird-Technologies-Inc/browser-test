@@ -1,0 +1,50 @@
+# Category test pool for BLOCKED_URLS (one entry per line: category domain).
+# Looked up in DNS only, never opened in a browser.
+#
+# The CATEGORY (first word) decides what is expected. EXPECT_BLOCKED_CATEGORIES lists the
+# categories switched ON in the resolver's panel: names in them must be blocked, names in every
+# other category must resolve normally. Change a category in the panel, change the list, and the
+# check follows. Category names here must match the panel's, so rename them to its exact names.
+#
+# Names: the malware/botnet/phishing/adult test names are vendor test names (Cisco Umbrella /
+# OpenDNS, WICAR, EICAR); the rest are well-known public sites chosen by their usual category.
+# Whether a resolver's feed puts a site in a category is the feed's decision, so a mismatch can
+# be a feed difference, not a bug. All resolved on public DNS when checked. A name that stops
+# existing would look "blocked" (NXDOMAIN), so re-check the pool now and then.
+malware     internetbadguys.com
+malware     examplemalwaredomain.com
+malware     wicar.org
+malware     secure.eicar.org
+botnet      examplebotnetdomain.com
+phishing    phish.opendns.com
+adult       exampleadultsite.com
+adult       pornhub.com
+adult       xvideos.com
+gambling    bet365.com
+gambling    draftkings.com
+gambling    pokerstars.com
+social      facebook.com
+social      instagram.com
+social      tiktok.com
+social      x.com
+streaming   netflix.com
+streaming   primevideo.com
+streaming   hotstar.com
+ads         doubleclick.net
+ads         adservice.google.com
+ads         ads.twitter.com
+dating      tinder.com
+dating      bumble.com
+games       steampowered.com
+games       roblox.com
+games       epicgames.com
+filesharing mega.nz
+filesharing wetransfer.com
+filesharing dropbox.com
+vpn         nordvpn.com
+vpn         expressvpn.com
+vpn         protonvpn.com
+crypto      binance.com
+crypto      coinbase.com
+news        bbc.com
+news        cnn.com

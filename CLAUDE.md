@@ -23,6 +23,8 @@ LeoHat was only the first example resolver. Code, config defaults and docs must 
 
 - `lib.js` holds the pure, unit-tested logic: stats helpers, `loadConfig(env, fs)`, blocked-domain classification, `summarizeResults`, `checkThresholds`. Put new logic there so `node:test` can reach it without a browser.
 - `browser-test.js` is the Playwright part: `testPage(browser, url, run)` collects per-request timings, `testPageIsolated` gives each page its own browser plus a hard timeout, and the main block runs a worker pool (`CONCURRENCY`), writes the CSVs and `summary.json`, and sets the exit code (0 ok, 1 threshold incl. `MAX_BLOCK_FAILED`, 2 config).
+- `dns-load-test.js` (`npm run dns-load`) is the on-demand DNS load ramp: needs `CONFIRM_LOAD=yes`, hard ceilings 50 parallel and 20 queries/s in `lib.js`. Never schedule it.
+- Random mix: `SAMPLE_*` + seeded `RANDOM_SEED` in `lib.loadConfig`. Blocked-pool entries carry a category; `EXPECT_BLOCKED_CATEGORIES` makes the category decide blocked vs allowed.
 - Config is env-var only (table in the README). New CSV columns are appended after the existing ones so downstream readers keep working.
 - Chromium uses the OS resolver, so results reflect whatever resolver the host is configured with. Running from WSL does not test the resolver: its resolver and IP are different, and the resolver only answers approved networks.
 

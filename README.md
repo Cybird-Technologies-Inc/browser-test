@@ -35,6 +35,10 @@ Every variable is optional. Defaults equal the old hardcoded values.
 | `MAX_DNS_CHECK_FAIL_RATE` | unset | Fail if DNS-only lookups that failed / total (0 to 1) is above this |
 | `BLOCKED_URLS` | unset | Domains the resolver should block, as `category=domain` entries (comma list, or a file). See below |
 | `MAX_BLOCK_FAILED` | unset | Fail if more than this many blocked domains were answered. Use `0` whenever `BLOCKED_URLS` is set |
+| `EXPECT_BLOCKED_CATEGORIES` | unset | Categories switched ON in the resolver's panel: `all`, `none` or a comma list. Names in them must be blocked, names in every other category must resolve normally. Unset = all expected blocked |
+| `SAMPLE_URLS` / `SAMPLE_BLOCKED` / `SAMPLE_DNS` | unset | Random real-user mix: use this many from the `URLS` / `DNS_DOMAINS` pool, or this many per category from the `BLOCKED_URLS` pool. Unset = use all |
+| `RANDOM_SEED` | random | Seed for the mix. It is logged and written to `summary.json`, so a run can be replayed |
+| `THINK_TIME_MAX_MS` | `0` | Each page waits a random 0 to this many ms after the first ones, like a user reading |
 | `BLOCK_PAGE_IPS` | unset | Comma list of the resolver's sinkhole IPs (list both IPv4 and IPv6 if it answers both) |
 
 A page counts as **failed** if it throws, times out, gets no main response, or
@@ -75,6 +79,38 @@ The summary reports totals and a count per category, so a feed that stops
 blocking shows up even while the others still work. A warning is logged if
 `BLOCKED_URLS` is set without `BLOCK_PAGE_IPS`. Blocked entries never count in
 the DNS percentiles or the page failure rate. Set `MAX_BLOCK_FAILED=0` to alert.
+
+**Category switch test.** Every pool entry has a category, and the category decides the
+expected answer. With `EXPECT_BLOCKED_CATEGORIES=malware,phishing`, malware and phishing
+names must be blocked, and names in all other categories (social, gambling, news and so on)
+must resolve normally. A blocked name that should resolve counts as `over_blocked`. Both
+directions count in `MAX_BLOCK_FAILED`. To test the panel: switch a category in the panel,
+add it to (or remove it from) the list, and watch the next cycles. A change needs time to
+reach the resolver and to leave caches, so expect a few wrong cycles right after a switch.
+Category names must match the panel's names. `SAMPLE_BLOCKED` picks per category, so every
+category is checked in every cycle. Pool files: `profiles/pool-urls.txt`,
+`profiles/pool-blocked.txt`, `profiles/pool-dns.txt`.
+
+### DNS load ramp (on demand)
+
+`npm run dns-load` sends A queries straight to one resolver in rising steps of parallel
+lookups (default 5, 10, 25, 50, each `STEP_SECONDS=30`), and writes `load-test-summary.json`
+with P50/P95/P99, errors and achieved queries per second per step, plus the first step where
+P95 passes `DEGRADE_FACTOR` (2) times the first step's, or errors pass `STOP_ERROR_RATE`
+(0.05). The ramp stops at that error rate. It is never run by the timer.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `RESOLVER_DNS_IP` | required | IPv4 of the resolver under test (queried directly, not the OS resolver) |
+| `CONFIRM_LOAD` | required | Must be `yes`: the owner of the resolver has agreed to the load |
+| `DNS_DOMAINS` | required | Names to query (list or file, for example `profiles/pool-dns.txt`) |
+| `LOAD_STEPS` | `5,10,25,50` | Parallel lookups per step, rising |
+| `STEP_SECONDS` | `30` | Length of each step (5 to 600) |
+| `MAX_QPS` | `20` | Queries per second ceiling. Cannot be set above 20 |
+| `LOAD_MAX_CONCURRENCY` | `50` | Cap on parallel lookups. Cannot be set above 50 |
+| `QUERY_TIMEOUT_MS` | `3000` | A lookup with no answer by then is an error |
+
+Run it only when the resolver's owner has agreed, one run at a time.
 
 ### Output files (in `OUT_DIR`)
 

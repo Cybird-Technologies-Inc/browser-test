@@ -78,7 +78,7 @@ test('summarizeBlocked: totals and per-category', () => {
     { host: 'p2', category: 'phishing', result: 'block_failed' },
   ]);
   assert.deepStrictEqual([s.total, s.blockedOk, s.blockFailed], [4, 3, 1]);
-  assert.deepStrictEqual(s.perCategory.phishing, { total: 2, blockedOk: 1, blockFailed: 1 });
+  assert.deepStrictEqual(s.perCategory.phishing, { total: 2, blockedOk: 1, allowedOk: 0, overBlocked: 0, blockFailed: 1, expected: 'blocked' });
   assert.deepStrictEqual(s.failedDomains, ['p2']);
 });
 
@@ -200,4 +200,111 @@ test('compareRuns: deltas, newly failing, recovered, and no trend when not compa
   assert.strictEqual(lib.compareRuns(run('other', 0, 1, {}), cur), null); // never compare across resolvers
   assert.deepStrictEqual(lib.compareRuns(cur, cur).notes, []);
   assert.strictEqual(lib.compareRuns(run('r1', 0, null, {}), run('r1', 0, 5, {})).p95DnsMs.delta, null);
+});
+
+// ---- random mix and DNS load ramp ----
+
+test('sampleItems: same seed gives the same mix, n caps at list size, no n keeps all', () => {
+  const list = ['a', 'b', 'c', 'd', 'e', 'f'];
+  const one = lib.sampleItems(list, 3, lib.makeRng(42));
+  assert.deepStrictEqual(one, lib.sampleItems(list, 3, lib.makeRng(42)));
+  assert.strictEqual(one.length, 3);
+  assert.strictEqual(new Set(one).size, 3);
+  assert.notDeepStrictEqual(lib.sampleItems(list, 3, lib.makeRng(1)), lib.sampleItems(list, 3, lib.makeRng(2)));
+  assert.strictEqual(lib.sampleItems(list, 99, lib.makeRng(1)).length, 6);
+  assert.deepStrictEqual(lib.sampleItems(list, null, lib.makeRng(1)), list);
+  assert.deepStrictEqual(list, ['a', 'b', 'c', 'd', 'e', 'f']); // input never mutated
+});
+
+test('loadConfig: SAMPLE_* picks from the pool, RANDOM_SEED replays, bad values rejected', () => {
+  const noFs = { existsSync: () => false };
+  const env = { RANDOM_SEED: '7', SAMPLE_URLS: '2', SAMPLE_BLOCKED: '1', BLOCKED_URLS: 'malware=a.example,phishing=b.example,adult=c.example', THINK_TIME_MAX_MS: '500' };
+  const a = lib.loadConfig(env, noFs);
+  const b = lib.loadConfig(env, noFs);
+  assert.strictEqual(a.urls.length, 2);
+  assert.strictEqual(a.blocked.length, 3); // 1 per category, 3 categories
+  assert.deepStrictEqual(a.urls, b.urls);
+  assert.deepStrictEqual(a.blocked, b.blocked);
+  assert.strictEqual(a.poolSizes.blocked, 3);
+  assert.strictEqual(a.thinkTimeMaxMs, 500);
+  assert.throws(() => lib.loadConfig({ SAMPLE_URLS: '0' }, noFs), /SAMPLE_URLS/);
+  assert.throws(() => lib.loadConfig({ RANDOM_SEED: '-1' }, noFs), /RANDOM_SEED/);
+  assert.throws(() => lib.loadConfig({ THINK_TIME_MAX_MS: '999999999' }, noFs), /THINK_TIME_MAX_MS/);
+});
+
+test('compareRuns: a URL missing from the sample is not "recovered"', () => {
+  const run = perUrl => ({ resolver: 'r', global: { dns: { p95: 10 }, failureRate: 0 }, perUrl });
+  const t = lib.compareRuns(run({ 'https://a': { failed: 1 }, 'https://b': { failed: 1 } }), run({ 'https://b': { failed: 0 } }));
+  assert.deepStrictEqual(t.recovered, ['https://b']);
+});
+
+test('loadLoadConfig: needs confirmation, a valid IP, domains; ceilings cannot be raised', () => {
+  const ok = { RESOLVER_DNS_IP: '10.0.0.1', CONFIRM_LOAD: 'yes', DNS_DOMAINS: 'a.example,b.example' };
+  const noFs = { existsSync: () => false };
+  const c = lib.loadLoadConfig(ok, noFs);
+  assert.deepStrictEqual(c.steps, [5, 10, 25, 50]);
+  assert.strictEqual(c.maxQps, 20);
+  assert.throws(() => lib.loadLoadConfig({ ...ok, CONFIRM_LOAD: undefined }, noFs), /CONFIRM_LOAD/);
+  assert.throws(() => lib.loadLoadConfig({ ...ok, CONFIRM_LOAD: 'true' }, noFs), /CONFIRM_LOAD/);
+  assert.throws(() => lib.loadLoadConfig({ ...ok, RESOLVER_DNS_IP: '999.1.1.1' }, noFs), /RESOLVER_DNS_IP/);
+  assert.throws(() => lib.loadLoadConfig({ ...ok, RESOLVER_DNS_IP: 'dns.example' }, noFs), /RESOLVER_DNS_IP/);
+  assert.throws(() => lib.loadLoadConfig({ ...ok, DNS_DOMAINS: undefined }, noFs), /DNS_DOMAINS/);
+  assert.throws(() => lib.loadLoadConfig({ ...ok, MAX_QPS: '21' }, noFs), /MAX_QPS/);
+  assert.throws(() => lib.loadLoadConfig({ ...ok, LOAD_STEPS: '5,100' }, noFs), /LOAD_STEPS/);
+  assert.throws(() => lib.loadLoadConfig({ ...ok, LOAD_STEPS: '10,5' }, noFs), /increase/);
+  assert.deepStrictEqual(lib.loadLoadConfig({ ...ok, LOAD_MAX_CONCURRENCY: '10' }, noFs).steps, [5, 10]);
+});
+
+test('summarizeLoadStep and findDegradation', () => {
+  const step = (concurrency, lat, errors = {}) => lib.summarizeLoadStep({ concurrency, durationMs: 10000, latencies: lat, errors });
+  const s1 = step(5, [10, 20, 30]);
+  assert.strictEqual(s1.errorRate, 0);
+  assert.strictEqual(s1.achievedQps, 0.3);
+  const s2 = step(10, [12, 25, 28]);
+  const s3 = step(25, [100, 200, 300]);
+  assert.deepStrictEqual(lib.findDegradation([s1, s2]), null);
+  assert.strictEqual(lib.findDegradation([s1, s2, s3]).concurrency, 25);
+  const bad = step(10, [10], { ETIMEOUT: 9 });
+  assert.match(lib.findDegradation([s1, bad]).reason, /error rate/);
+  assert.strictEqual(step(5, [], {}).errorRate, 0);
+  assert.strictEqual(lib.findDegradation([]), null);
+});
+
+test('EXPECT_BLOCKED_CATEGORIES: category decides blocked vs allowed, typos rejected', () => {
+  const noFs = { existsSync: () => false };
+  const base = { BLOCKED_URLS: 'malware=a.example,malware=a2.example,social=b.example,news=c.example', RANDOM_SEED: '1' };
+  const exp = cfg => Object.fromEntries(cfg.blocked.map(e => [e.host, e.expected]));
+  assert.deepStrictEqual(Object.values(exp(lib.loadConfig(base, noFs))), ['blocked', 'blocked', 'blocked', 'blocked']); // unset = old behavior
+  const some = exp(lib.loadConfig({ ...base, EXPECT_BLOCKED_CATEGORIES: 'malware' }, noFs));
+  assert.strictEqual(some['a.example'], 'blocked');
+  assert.strictEqual(some['b.example'], 'allowed');
+  assert.strictEqual(some['c.example'], 'allowed');
+  assert.ok(Object.values(exp(lib.loadConfig({ ...base, EXPECT_BLOCKED_CATEGORIES: 'none' }, noFs))).every(v => v === 'allowed'));
+  assert.ok(Object.values(exp(lib.loadConfig({ ...base, EXPECT_BLOCKED_CATEGORIES: 'ALL' }, noFs))).every(v => v === 'blocked'));
+  assert.throws(() => lib.loadConfig({ ...base, EXPECT_BLOCKED_CATEGORIES: 'malwre' }, noFs), /malwre/);
+  // SAMPLE_BLOCKED=1 keeps every category in the cycle
+  const s = lib.loadConfig({ ...base, SAMPLE_BLOCKED: '1' }, noFs);
+  assert.deepStrictEqual(new Set(s.blocked.map(e => e.category)), new Set(['malware', 'social', 'news']));
+});
+
+test('classifyBlocked with expected=allowed: normal answer passes, any block or error fails', () => {
+  const opts = { blockPageIps: ['10.9.9.9'] };
+  assert.strictEqual(lib.classifyBlocked({ addresses: ['1.2.3.4'] }, opts, 'allowed').result, 'allowed_ok');
+  assert.strictEqual(lib.classifyBlocked({ errorCode: 'ENOTFOUND' }, opts, 'allowed').result, 'over_blocked');
+  assert.strictEqual(lib.classifyBlocked({ addresses: ['10.9.9.9'] }, opts, 'allowed').result, 'over_blocked');
+  assert.strictEqual(lib.classifyBlocked({ errorCode: 'ETIMEOUT' }, opts, 'allowed').result, 'over_blocked');
+  assert.strictEqual(lib.classifyBlocked({ addresses: ['1.2.3.4'] }, opts).result, 'block_failed'); // default unchanged
+});
+
+test('summarizeBlocked counts both directions as policy misses', () => {
+  const r = lib.summarizeBlocked([
+    { host: 'a', category: 'malware', expected: 'blocked', result: 'blocked_ok' },
+    { host: 'b', category: 'social', expected: 'allowed', result: 'allowed_ok' },
+    { host: 'c', category: 'social', expected: 'allowed', result: 'over_blocked' },
+    { host: 'd', category: 'malware', expected: 'blocked', result: 'block_failed' },
+  ]);
+  assert.strictEqual(r.blockFailed, 2);
+  assert.strictEqual(r.overBlocked, 1);
+  assert.strictEqual(r.perCategory.social.expected, 'allowed');
+  assert.deepStrictEqual(r.failedDomains.sort(), ['c', 'd']);
 });

@@ -972,7 +972,7 @@ async function testPageIsolated(url, runNumber) {
 
 // Blocked names are only looked up, never opened: they are malware/phishing
 // domains. getaddrinfo is what Chromium uses too, so the answer matches.
-async function runBlockedCheck({ host, category, run }) {
+async function runBlockedCheck({ host, category, run, expected = 'blocked' }) {
   const timestamp = new Date().toISOString();
   const started = performance.now();
   let answer;
@@ -985,9 +985,9 @@ async function runBlockedCheck({ host, category, run }) {
   }
 
   const dnsMs = round(performance.now() - started);
-  const { result, detail } = lib.classifyBlocked(answer, CONFIG);
+  const { result, detail } = lib.classifyBlocked(answer, CONFIG, expected);
 
-  console.log(`BLOCKED CHECK [${category}] ${host}: ${result} (${detail}, ${dnsMs} ms)`);
+  console.log(`BLOCKED CHECK [${category}, expected ${expected}] ${host}: ${result} (${detail}, ${dnsMs} ms)`);
 
   return {
     blocked: true,
@@ -1004,6 +1004,7 @@ async function runBlockedCheck({ host, category, run }) {
       kind: 'blocked',
       category,
       blockResult: result,
+      blockExpected: expected,
       blockDetail: detail,
     },
   };
@@ -1031,8 +1032,8 @@ async function runDnsChecks() {
   return lib.summarizeDnsChecks(out);
 }
 
-async function runTask({ url, run, blocked, host, category }) {
-  if (blocked) return runBlockedCheck({ host, category, run });
+async function runTask({ url, run, blocked, host, category, expected }) {
+  if (blocked) return runBlockedCheck({ host, category, run, expected });
 
   const timestamp = new Date().toISOString();
   const stamp = row => ({ ...row, resolver: RESOLVER_LABEL, timestamp, kind: 'normal' });
@@ -1069,6 +1070,11 @@ async function runTask({ url, run, blocked, host, category }) {
     for (const b of CONFIG.blocked) tasks.push({ ...b, run, blocked: true });
   }
 
+  const thinkRng = lib.makeRng(CONFIG.randomSeed + 1);
+  console.log(`Random mix: seed ${CONFIG.randomSeed} (replay with RANDOM_SEED=${CONFIG.randomSeed}). ` +
+    `${CONFIG.urls.length}/${CONFIG.poolSizes.urls} pages, ${CONFIG.blocked.length}/${CONFIG.poolSizes.blocked} blocked names, ` +
+    `${CONFIG.dnsDomains.length}/${CONFIG.poolSizes.dns} DNS names, think time up to ${CONFIG.thinkTimeMaxMs} ms.`);
+
   // Simple worker pool: no dependency, results kept in task order.
   const results = new Array(tasks.length);
   let next = 0;
@@ -1076,6 +1082,10 @@ async function runTask({ url, run, blocked, host, category }) {
     Array.from({ length: Math.min(CONFIG.concurrency, tasks.length) }, async () => {
       while (next < tasks.length) {
         const i = next++;
+        // A real user pauses between pages. Own generator so pauses never change the sampled mix.
+        if (CONFIG.thinkTimeMaxMs > 0 && i >= CONFIG.concurrency) {
+          await new Promise(r => setTimeout(r, Math.floor(thinkRng() * CONFIG.thinkTimeMaxMs)));
+        }
         results[i] = await runTask(tasks[i]);
       }
     })
@@ -1228,7 +1238,7 @@ async function runTask({ url, run, blocked, host, category }) {
   const dnsChecks = await runDnsChecks();
 
   const blocked = lib.summarizeBlocked(
-    results.filter(r => r.blocked).map(r => ({ host: r.host, category: r.category, result: r.summary.blockResult }))
+    results.filter(r => r.blocked).map(r => ({ host: r.host, category: r.category, expected: r.summary.blockExpected, result: r.summary.blockResult }))
   );
 
   const violations = lib.checkThresholds(stats.global, CONFIG, blocked, CONFIG.dnsDomains.length ? dnsChecks : null);
@@ -1247,6 +1257,9 @@ async function runTask({ url, run, blocked, host, category }) {
       maxBlockFailed: CONFIG.maxBlockFailed,
       maxDnsCheckFailRate: CONFIG.maxDnsCheckFailRate,
       ignoreHttpStatus: CONFIG.ignoreHttpStatus,
+      randomSeed: CONFIG.randomSeed,
+      poolSizes: CONFIG.poolSizes,
+      thinkTimeMaxMs: CONFIG.thinkTimeMaxMs,
     },
     global: stats.global,
     perUrl: stats.perUrl,
@@ -1281,8 +1294,8 @@ Files created in ${CONFIG.outDir}:
 
 Resolver ${RESOLVER_LABEL}: ${stats.global.failed}/${stats.global.attempts} pages failed, P95 DNS ${stats.global.dns.p95 ?? '-'} ms
 ${failures.advice.map(a => `Why: ${a}`).join('\n')}${CONFIG.dnsDomains.length ? `\nDNS-only checks: ${dnsChecks.failed}/${dnsChecks.total} failed, P95 ${dnsChecks.p95 ?? '-'} ms` : ''}
-${summaryJson.trend ? `Trend vs ${summaryJson.trend.previousStartedAt}: ${summaryJson.trend.notes.join('; ') || 'no change'}\n` : ''}Blocked-domain checks: ${blocked.blockedOk} blocked OK, ${blocked.blockFailed} block FAILED (of ${blocked.total})
-${Object.entries(blocked.perCategory).map(([c, v]) => `  ${c}: ${v.blockedOk}/${v.total} blocked`).join('\n')}
+${summaryJson.trend ? `Trend vs ${summaryJson.trend.previousStartedAt}: ${summaryJson.trend.notes.join('; ') || 'no change'}\n` : ''}Category checks: ${blocked.blockedOk} blocked OK, ${blocked.allowedOk} allowed OK, ${blocked.blockFailed} WRONG (of ${blocked.total}; ${blocked.overBlocked} blocked that should be allowed)
+${Object.entries(blocked.perCategory).map(([c, v]) => `  ${c} (expected ${v.expected}): ${v.expected === 'blocked' ? v.blockedOk : v.allowedOk}/${v.total} correct`).join('\n')}
 `);
 
   for (const v of violations) console.error(`THRESHOLD: ${v}`);

@@ -159,12 +159,61 @@ function parseDomainList(raw, errors, fsLike) {
   return items.map(d => d.toLowerCase());
 }
 
+// Small seeded generator (mulberry32). The seed is logged and written to summary.json, so a
+// random mix can be replayed exactly with RANDOM_SEED=<seed>.
+function makeRng(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// n random items of the list, in random order (Fisher-Yates). n null/0 = keep the list as is.
+// n above the list size is capped by the caller's warning, not an error.
+function sampleItems(list, n, rng) {
+  if (!n || n <= 0) return [...list];
+  const a = [...list];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a.slice(0, Math.min(n, a.length));
+}
+
 function loadConfig(env, fsLike) {
   const errors = [];
   const num = (key, fallback, opts) => parseNumber(env[key], fallback, key, errors, opts);
 
-  const urls = env.URLS ? parseUrlList(env.URLS, 'URLS', errors, fsLike) : [...DEFAULT_URLS];
-  const blocked = env.BLOCKED_URLS ? parseBlockedList(env.BLOCKED_URLS, errors, fsLike) : [];
+  const allUrls = env.URLS ? parseUrlList(env.URLS, 'URLS', errors, fsLike) : [...DEFAULT_URLS];
+  const allBlocked = env.BLOCKED_URLS ? parseBlockedList(env.BLOCKED_URLS, errors, fsLike) : [];
+  const allDns = env.DNS_DOMAINS ? parseDomainList(env.DNS_DOMAINS, errors, fsLike) : [];
+  // Random "real user" mix: SAMPLE_* = how many of each pool to use this run (unset = all).
+  const seed = num('RANDOM_SEED', Math.floor(Math.random() * 2 ** 32), { min: 0, max: 2 ** 32 - 1, integer: true });
+  const rng = makeRng(seed);
+  const sampleUrls = num('SAMPLE_URLS', null, { min: 1, integer: true });
+  const sampleBlocked = num('SAMPLE_BLOCKED', null, { min: 1, integer: true });
+  const sampleDns = num('SAMPLE_DNS', null, { min: 1, integer: true });
+  const urls = sampleItems(allUrls, sampleUrls, rng);
+  // SAMPLE_BLOCKED = names per CATEGORY, so every category is covered in every cycle.
+  const byCat = {};
+  for (const e of allBlocked) (byCat[e.category] ||= []).push(e);
+  // Which categories the panel has switched ON. Unset = all expected blocked (old behavior).
+  // Listed categories must exist in the pool: a typo would silently flip a category's meaning.
+  const poolCats = Object.keys(byCat);
+  let expectBlocked = null;
+  if (env.EXPECT_BLOCKED_CATEGORIES !== undefined && env.EXPECT_BLOCKED_CATEGORIES.trim() !== '') {
+    const raw = env.EXPECT_BLOCKED_CATEGORIES.trim().toLowerCase();
+    expectBlocked = raw === 'all' ? poolCats : raw === 'none' ? [] : raw.split(',').map(x => x.trim()).filter(Boolean);
+    for (const c of expectBlocked) {
+      if (!poolCats.includes(c)) errors.push(`EXPECT_BLOCKED_CATEGORIES lists "${c}", which is not a category in BLOCKED_URLS (${poolCats.join(', ') || 'none'}). Use all, none or a comma list.`);
+    }
+  }
+  const blocked = poolCats.flatMap(c => sampleItems(byCat[c], sampleBlocked, rng))
+    .map(e => ({ ...e, expected: expectBlocked === null || expectBlocked.includes(e.category) ? 'blocked' : 'allowed' }));
 
   const config = {
     urls,
@@ -184,7 +233,12 @@ function loadConfig(env, fsLike) {
     // clients. Empty by default: 4xx and 5xx fail, as before.
     ignoreHttpStatus: parseStatusList(env.IGNORE_HTTP_STATUS, errors),
     // DNS-only lookups of plain domains, timed through the same OS resolver the browser uses.
-    dnsDomains: env.DNS_DOMAINS ? parseDomainList(env.DNS_DOMAINS, errors, fsLike) : [],
+    dnsDomains: sampleItems(allDns, sampleDns, rng),
+    randomSeed: seed,
+    expectBlockedCategories: expectBlocked,
+    poolSizes: { urls: allUrls.length, blocked: allBlocked.length, dns: allDns.length },
+    // A user pauses between pages: each page waits a random 0..max ms (per browser). 0 = no pause.
+    thinkTimeMaxMs: num('THINK_TIME_MAX_MS', 0, { min: 0, max: 600000, integer: true }),
     dnsRepeats: num('DNS_REPEATS', 3, { min: 1, max: 100, integer: true }),
     maxDnsCheckFailRate: num('MAX_DNS_CHECK_FAIL_RATE', null, { min: 0, max: 1 }),
     // null means "no limit": thresholds are opt-in so existing runs keep exiting 0.
@@ -211,12 +265,20 @@ function loadConfig(env, fsLike) {
 // NXDOMAIN or as an answer that is only the resolver's sinkhole address.
 // Any other answer is a real one, so the block failed. A resolver error
 // proves nothing, so it fails the check too (and the detail says why).
-function classifyBlocked({ addresses = [], errorCode = null }, { blockPageIps = [] } = {}) {
-  if (errorCode === 'ENOTFOUND') return { result: 'blocked_ok', detail: 'NXDOMAIN' };
-  if (errorCode) return { result: 'block_failed', detail: `resolver error ${errorCode}` };
-  if (addresses.length && addresses.every(a => blockPageIps.includes(a))) {
-    return { result: 'blocked_ok', detail: 'sinkhole' };
+function classifyBlocked({ addresses = [], errorCode = null }, { blockPageIps = [] } = {}, expected = 'blocked') {
+  const nxdomain = errorCode === 'ENOTFOUND';
+  const sinkholed = !errorCode && addresses.length > 0 && addresses.every(a => blockPageIps.includes(a));
+  if (expected === 'allowed') {
+    // The category is switched off in the panel: a normal answer is the pass. A block or a
+    // resolver error means the resolver filters when it should not (or proved nothing).
+    if (nxdomain) return { result: 'over_blocked', detail: 'NXDOMAIN (category should be allowed)' };
+    if (errorCode) return { result: 'over_blocked', detail: `resolver error ${errorCode}` };
+    if (sinkholed) return { result: 'over_blocked', detail: 'sinkhole (category should be allowed)' };
+    return { result: 'allowed_ok', detail: `real answer ${addresses.join(' ') || 'none'}` };
   }
+  if (nxdomain) return { result: 'blocked_ok', detail: 'NXDOMAIN' };
+  if (errorCode) return { result: 'block_failed', detail: `resolver error ${errorCode}` };
+  if (sinkholed) return { result: 'blocked_ok', detail: 'sinkhole' };
   return { result: 'block_failed', detail: `real answer ${addresses.join(' ') || 'none'}` };
 }
 
@@ -263,18 +325,24 @@ function summarizeResults({ pages, requests, cacheLikeMs }) {
 // results: [{host, category, result}]. Per category so a feed that stops
 // blocking (for example phishing) is visible even when malware still works.
 function summarizeBlocked(results) {
+  const good = r => r.result === 'blocked_ok' || r.result === 'allowed_ok';
   const tally = rs => {
     const blockedOk = rs.filter(r => r.result === 'blocked_ok').length;
-    return { total: rs.length, blockedOk, blockFailed: rs.length - blockedOk };
+    const allowedOk = rs.filter(r => r.result === 'allowed_ok').length;
+    const overBlocked = rs.filter(r => r.result === 'over_blocked').length;
+    // blockFailed counts every policy miss (not blocked when it should be, or blocked when it
+    // should not be), so MAX_BLOCK_FAILED=0 catches both directions.
+    return { total: rs.length, blockedOk, allowedOk, overBlocked, blockFailed: rs.length - blockedOk - allowedOk };
   };
   const perCategory = {};
   for (const c of new Set(results.map(r => r.category))) {
-    perCategory[c] = tally(results.filter(r => r.category === c));
+    const rs = results.filter(r => r.category === c);
+    perCategory[c] = { ...tally(rs), expected: rs[0].expected || 'blocked' };
   }
   return {
     ...tally(results),
     perCategory,
-    failedDomains: [...new Set(results.filter(r => r.result !== 'blocked_ok').map(r => r.host))],
+    failedDomains: [...new Set(results.filter(r => !good(r)).map(r => r.host))],
   };
 }
 
@@ -291,7 +359,7 @@ function checkThresholds(global, { maxP95DnsMs = null, maxFailRate = null, maxBl
   }
   if (maxBlockFailed !== null && blocked && blocked.blockFailed > maxBlockFailed) {
     violations.push(
-      `MAX_BLOCK_FAILED exceeded: ${blocked.blockFailed} of ${blocked.total} blocked domains were answered > limit ${maxBlockFailed}`
+      `MAX_BLOCK_FAILED exceeded: ${blocked.blockFailed} of ${blocked.total} domain checks did not follow the category setting > limit ${maxBlockFailed}`
     );
   }
   if (maxDnsCheckFailRate !== null && dnsChecks && dnsChecks.failureRate > maxDnsCheckFailRate) {
@@ -313,7 +381,8 @@ function compareRuns(prev, cur) {
   const before = failedUrls(prev);
   const after = failedUrls(cur);
   const newlyFailed = [...after].filter(u => !before.has(u));
-  const recovered = [...before].filter(u => !after.has(u));
+  // Random mix: a URL missing from this run's sample was not retested, so it is not "recovered".
+  const recovered = [...before].filter(u => !after.has(u) && Object.hasOwn(cur.perUrl, u));
   const failureRate = pair(prev.global.failureRate, cur.global.failureRate);
   const p95DnsMs = pair(prev.global.dns.p95, cur.global.dns.p95);
   const notes = [];
@@ -395,7 +464,90 @@ function withTimeout(promise, ms, message) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+// ------------------------------------------------------------------
+// DNS load ramp (dns-load-test.js). On demand only, never on the timer.
+// ------------------------------------------------------------------
+
+// Hard ceilings: the target is a live ISP resolver. Config can lower them, never raise them.
+const LOAD_HARD_MAX_CONCURRENCY = 50;
+const LOAD_HARD_MAX_QPS = 20;
+
+function loadLoadConfig(env, fsLike) {
+  const errors = [];
+  const num = (key, fallback, opts) => parseNumber(env[key], fallback, key, errors, opts);
+  const ip = (env.RESOLVER_DNS_IP || '').trim();
+  if (!/^(\d{1,3}\.){3}\d{1,3}$/.test(ip) || ip.split('.').some(o => Number(o) > 255)) {
+    errors.push('RESOLVER_DNS_IP must be the IPv4 address of the resolver under test.');
+  }
+  // A load test is deliberate: no default of "go".
+  if (env.CONFIRM_LOAD !== 'yes') {
+    errors.push('CONFIRM_LOAD=yes is required. This sends sustained load to a resolver; run it only with its owner\'s agreement.');
+  }
+  const domains = env.DNS_DOMAINS ? parseDomainList(env.DNS_DOMAINS, errors, fsLike) : [];
+  if (!domains.length) errors.push('DNS_DOMAINS is required: a comma list or a file of domains to query.');
+
+  const maxConcurrency = num('LOAD_MAX_CONCURRENCY', LOAD_HARD_MAX_CONCURRENCY, { min: 1, max: LOAD_HARD_MAX_CONCURRENCY, integer: true });
+  let steps = [5, 10, 25, 50].filter(n => n <= maxConcurrency);
+  if (env.LOAD_STEPS) {
+    steps = env.LOAD_STEPS.split(',').map(x => Number(x.trim()));
+    if (!steps.length || steps.some(n => !Number.isInteger(n) || n < 1 || n > maxConcurrency)) {
+      errors.push(`LOAD_STEPS must be comma-separated whole numbers from 1 to ${maxConcurrency}.`);
+    }
+    if (steps.some((n, i) => i && n <= steps[i - 1])) errors.push('LOAD_STEPS must increase from step to step.');
+  }
+  const config = {
+    resolverIp: ip,
+    resolverLabel: env.RESOLVER_LABEL || 'unlabeled',
+    domains,
+    steps,
+    stepSeconds: num('STEP_SECONDS', 30, { min: 5, max: 600, integer: true }),
+    maxQps: num('MAX_QPS', LOAD_HARD_MAX_QPS, { min: 1, max: LOAD_HARD_MAX_QPS }),
+    stopErrorRate: num('STOP_ERROR_RATE', 0.05, { min: 0, max: 1 }),
+    queryTimeoutMs: num('QUERY_TIMEOUT_MS', 3000, { min: 200, max: 30000, integer: true }),
+    degradeFactor: num('DEGRADE_FACTOR', 2, { min: 1 }),
+    randomSeed: num('RANDOM_SEED', Math.floor(Math.random() * 2 ** 32), { min: 0, max: 2 ** 32 - 1, integer: true }),
+    outDir: env.OUT_DIR || '.',
+  };
+  if (errors.length) {
+    const err = new Error(`Invalid configuration:\n  - ${errors.join('\n  - ')}`);
+    err.configErrors = errors;
+    throw err;
+  }
+  return config;
+}
+
+// One ramp step. latencies = ms of answered queries; errors = count per error code.
+function summarizeLoadStep({ concurrency, durationMs, latencies, errors }) {
+  const failed = Object.values(errors).reduce((a, b) => a + b, 0);
+  const total = latencies.length + failed;
+  return {
+    concurrency,
+    queries: total,
+    answered: latencies.length,
+    failed,
+    errorRate: rate(failed, total),
+    achievedQps: durationMs > 0 ? round((total / durationMs) * 1000) : 0,
+    latency: dnsStats(latencies),
+    errorsByCode: errors,
+  };
+}
+
+// First step where the resolver gets worse: P95 above `factor` x the first step's P95, or
+// an error rate above the stop limit. Returns null if the ramp stayed healthy.
+function findDegradation(steps, { factor = 2, stopErrorRate = 0.05 } = {}) {
+  const base = steps.length ? steps[0].latency.p95 : null;
+  for (const st of steps) {
+    if (st.errorRate !== null && st.errorRate > stopErrorRate) return { concurrency: st.concurrency, reason: `error rate ${st.errorRate} > ${stopErrorRate}` };
+    if (base && st.latency.p95 !== null && st.latency.p95 > base * factor) {
+      return { concurrency: st.concurrency, reason: `P95 ${st.latency.p95} ms > ${factor}x the first step (${base} ms)` };
+    }
+  }
+  return null;
+}
+
 module.exports = {
+  loadLoadConfig, summarizeLoadStep, findDegradation, LOAD_HARD_MAX_CONCURRENCY, LOAD_HARD_MAX_QPS,
+  makeRng, sampleItems,
   DEFAULT_URLS, parseBlockedList, round, phase, percentile, average, hostnameFromUrl, csvEscape, dnsBuckets,
   loadConfig, parseUrlList, classifyBlocked, rate, dnsStats, summarizeResults, summarizeBlocked, checkThresholds, isHttpFailure, withTimeout,
   compareRuns, classifyFailure, summarizeFailures, summarizeDnsChecks, parseDomainList,

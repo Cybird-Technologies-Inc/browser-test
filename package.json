@@ -9,9 +9,10 @@
   },
   "scripts": {
     "start": "node browser-test.js",
+    "dns-load": "node dns-load-test.js",
     "test": "node --test \"test/*.test.js\"",
     "lint": "eslint .",
-    "check": "node --check browser-test.js",
+    "check": "node --check browser-test.js && node --check dns-load-test.js",
     "verify": "npm run check && npm run lint && npm test",
     "setup": "git config core.hooksPath .githooks"
   },
