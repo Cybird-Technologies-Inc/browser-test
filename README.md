@@ -87,7 +87,7 @@ must resolve normally. A blocked name that should resolve counts as `over_blocke
 directions count in `MAX_BLOCK_FAILED`. To test the panel: switch a category in the panel,
 add it to (or remove it from) the list, and watch the next cycles. A change needs time to
 reach the resolver and to leave caches, so expect a few wrong cycles right after a switch.
-Category names must match the panel's names. `SAMPLE_BLOCKED` picks per category, so every
+`SAMPLE_BLOCKED` picks per category, so every
 category is checked in every cycle. Pool files: `profiles/pool-urls.txt`,
 `profiles/pool-blocked.txt`, `profiles/pool-dns.txt`.
 
