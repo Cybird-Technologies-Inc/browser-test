@@ -308,3 +308,13 @@ test('summarizeBlocked counts both directions as policy misses', () => {
   assert.strictEqual(r.perCategory.social.expected, 'allowed');
   assert.deepStrictEqual(r.failedDomains.sort(), ['c', 'd']);
 });
+
+test('summarizeBlocked lists each missed check with its category and detail', () => {
+  const s = lib.summarizeBlocked([
+    { host: 'a.test', category: 'malware', expected: 'blocked', result: 'block_failed', detail: 'real answer 1.2.3.4' },
+    { host: 'b.test', category: 'control', expected: 'allowed', result: 'allowed_ok' },
+  ]);
+  assert.deepEqual(s.failedChecks, [
+    { host: 'a.test', category: 'malware', expected: 'blocked', result: 'block_failed', detail: 'real answer 1.2.3.4' },
+  ]);
+});

@@ -37,8 +37,12 @@ else
       const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
       for (const v of s.thresholdViolations || []) console.log("- " + v);
       const f = s.failures || {};
-      for (const u of f.failedUrls || []) console.log("  failed: " + u.url + " [" + u.reason + (u.httpStatus ? " HTTP " + u.httpStatus : "") + "]");
-      for (const a of f.advice || []) console.log("  why: " + a);
+      const b = s.blocked || {};
+      if ((b.failedChecks || []).length) console.log("  Category check misses (name, category, expected, result):");
+      for (const c of b.failedChecks || []) console.log("    " + c.host + " [" + c.category + ", expected " + c.expected + "] " + c.result + (c.detail ? " (" + c.detail + ")" : ""));
+      if ((f.failedUrls || []).length) console.log("  Page failures:");
+      for (const u of f.failedUrls || []) console.log("    " + u.url + " [" + u.reason + (u.httpStatus ? " HTTP " + u.httpStatus : "") + "]");
+      for (const a of f.advice || []) console.log("    why: " + a);
       if (s.trend && s.trend.notes.length) console.log("  trend: " + s.trend.notes.join("; "));
       const d = s.dnsChecks;
       if (d && d.failed) console.log("  dns-only failures: " + d.failedDomains.join(", "));

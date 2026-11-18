@@ -1238,7 +1238,7 @@ async function runTask({ url, run, blocked, host, category, expected }) {
   const dnsChecks = await runDnsChecks();
 
   const blocked = lib.summarizeBlocked(
-    results.filter(r => r.blocked).map(r => ({ host: r.host, category: r.category, expected: r.summary.blockExpected, result: r.summary.blockResult }))
+    results.filter(r => r.blocked).map(r => ({ host: r.host, category: r.category, expected: r.summary.blockExpected, result: r.summary.blockResult, detail: r.summary.blockDetail }))
   );
 
   const violations = lib.checkThresholds(stats.global, CONFIG, blocked, CONFIG.dnsDomains.length ? dnsChecks : null);

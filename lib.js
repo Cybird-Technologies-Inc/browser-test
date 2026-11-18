@@ -343,6 +343,10 @@ function summarizeBlocked(results) {
     ...tally(results),
     perCategory,
     failedDomains: [...new Set(results.filter(r => !good(r)).map(r => r.host))],
+    // Per-name detail for the alert email: which name, which category, what was expected.
+    failedChecks: results.filter(r => !good(r)).map(r => ({
+      host: r.host, category: r.category, expected: r.expected || 'blocked', result: r.result, detail: r.detail || null,
+    })),
   };
 }
 
