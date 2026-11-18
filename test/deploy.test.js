@@ -216,7 +216,7 @@ function runAll({ targets, npmRc = {}, lockHeld = false, noBucket = false }) {
       return p;
     };
     // Fake npm: records the label, writes summary.json, exits with the configured code.
-    const npm = mk('fake-npm', `echo "npm label=$RESOLVER_LABEL out=$OUT_DIR" >> "${log}"
+    const npm = mk('fake-npm', `echo "npm label=$RESOLVER_LABEL out=$OUT_DIR seed=$RANDOM_SEED" >> "${log}"
 rc=$(node -e 'console.log((JSON.parse(require("fs").readFileSync(process.argv[1]))[process.argv[2]])||0)' "${rcFile}" "$RESOLVER_LABEL")
 echo '{"thresholdViolations":[]}' > "$OUT_DIR/summary.json"; echo x > "$OUT_DIR/page-summary.csv"; echo x > "$OUT_DIR/request-details.csv"
 exit $rc`);
@@ -257,7 +257,7 @@ test('run-all.sh: sorted loop, per-target alerts, heartbeat rules, invalid names
   assert.match(r.stderr, /Skipping target file 'bad name\.env'/);
   const npmOrder = calls.filter((c) => c.startsWith('npm ')).map((c) => c.match(/label=(\S+)/)[1]);
   assert.deepStrictEqual(npmOrder, ['a-thr', 'b-cfg', 'c-ok']);
-  assert.ok(calls.filter((c) => c.startsWith('npm ')).every((c) => /out=\S+\/(a-thr|b-cfg|c-ok)$/.test(c)));
+  assert.ok(calls.filter((c) => c.startsWith('npm ')).every((c) => /out=\S+\/(a-thr|b-cfg|c-ok) seed=/.test(c)));
   assert.deepStrictEqual(calls.filter((c) => c.startsWith('switch ')), ['switch 192.0.2.1', 'switch 192.0.2.2', 'switch 192.0.2.3']);
   const alerts = calls.filter((c) => c.startsWith('alert '));
   assert.strictEqual(alerts.length, 2);
@@ -323,4 +323,15 @@ test('IAM: the runner may read only latest.json under results/ (for the trend), 
   const text = fs.readFileSync(path.join(deployDir, 'aws', 'install.sh'), 'utf8');
   assert.match(text, /s3:GetObject",\n\s+"Resource": "arn:aws:s3:::'"\$BUCKET"'\/results\/resolver=\*\/latest\.json"/);
   assert.ok(!/GetObject[^}]*results\/\*/.test(text), 'no GetObject on results/*');
+});
+
+test('run-all.sh: every target in a cycle gets the same random seed unless it sets its own', () => {
+  const { r, calls } = runAll({
+    targets: { 'a.env': 'RESOLVER_DNS_IP=192.0.2.1\n', 'b.env': 'RESOLVER_DNS_IP=192.0.2.2\n', 'c.env': 'RESOLVER_DNS_IP=192.0.2.3\nRANDOM_SEED=42\n' },
+  });
+  assert.strictEqual(r.status, 0, r.stderr);
+  const seeds = Object.fromEntries(calls.filter((c) => c.startsWith('npm ')).map((c) => [c.match(/label=(\S+)/)[1], c.match(/seed=(\S*)/)[1]]));
+  assert.match(seeds.a, /^\d{9,10}$/);
+  assert.strictEqual(seeds.a, seeds.b);
+  assert.strictEqual(seeds.c, '42');
 });

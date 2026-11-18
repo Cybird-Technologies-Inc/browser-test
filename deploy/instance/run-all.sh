@@ -95,6 +95,11 @@ shopt -s nullglob
 files=("$CONF_DIR"/targets/*.env)
 [ "${#files[@]}" -gt 0 ] || die "No target files in $CONF_DIR/targets/. Add one with deploy/aws/add-target.sh <label> <ip>."
 
+# One random-mix seed per cycle, shared by every target, so each resolver loads the SAME
+# sampled pages and the results can be compared one to one. A seed set in a target file or
+# /etc/browser-test/env wins. Logged by browser-test.js, so a cycle can be replayed.
+CYCLE_SEED="$(date -u +%s)"
+
 ran=0; switched=0
 for f in "${files[@]}"; do
   label="$(basename "$f" .env)"
@@ -136,6 +141,7 @@ for f in "${files[@]}"; do
   else
     log INFO "Target $label: no previous summary in S3, so no trend this run"
   fi
+  ENVMAP[RANDOM_SEED]="${ENVMAP[RANDOM_SEED]:-$CYCLE_SEED}"
   # The label always comes from the file name; a stale RESOLVER_LABEL in the env is ignored.
   ENVMAP[RESOLVER_LABEL]="$label"; ENVMAP[OUT_DIR]="$out"; ENVMAP[HOME]="${ENVMAP[HOME]:-$STATE_DIR}"
   declare -a envargs=()

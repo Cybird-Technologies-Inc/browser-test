@@ -128,6 +128,15 @@ MAX_BLOCK_FAILED=0
 MAX_P95_DNS_MS=250
 ```
 
+### Comparing resolvers in the same cycle
+
+Every target in one cycle gets the same `RANDOM_SEED` (the cycle's start time in seconds), so
+all resolvers load the same sampled pages and results compare one to one. A `RANDOM_SEED` in
+a target file wins. To tell a slow site from a slow resolver, add a public resolver as a
+reference target with no thresholds and no blocked list, so it never alerts:
+`deploy/aws/add-target.sh reference <public-resolver-ip>`, then give its file the same
+`URLS`/`SAMPLE_URLS` lines as the resolver under test. Compare the two `summary.json` files.
+
 ### Timing
 
 Cycle time is roughly 1 to 3 minutes per target. Total = sum over all targets, and it
