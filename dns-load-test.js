@@ -32,6 +32,8 @@ resolver.setServers([config.resolverIp]);
 async function runStep(concurrency) {
   const latencies = [];
   const errors = {};
+  let noRecord = 0;
+  let paced = false;
   const gap = 1000 / config.maxQps;           // global pacing: the queries/s ceiling
   let nextSlot = Date.now();
   const start = Date.now();
@@ -43,7 +45,7 @@ async function runStep(concurrency) {
       const slot = Math.max(nextSlot, Date.now());
       nextSlot = slot + gap;
       if (slot >= end) return;
-      if (slot > Date.now()) await sleep(slot - Date.now());
+      if (slot > Date.now()) { paced = true; await sleep(slot - Date.now()); }
       const domain = config.domains[Math.floor(rng() * config.domains.length)];
       const t0 = performance.now();
       try {
@@ -51,13 +53,19 @@ async function runStep(concurrency) {
         latencies.push(performance.now() - t0);
       } catch (error) {
         const code = error.code || 'UNKNOWN';
-        errors[code] = (errors[code] || 0) + 1;
+        if (code === 'ENODATA' || code === 'ENOTFOUND') {
+          // The resolver answered "no such record": real work for it, not a failure of the resolver.
+          latencies.push(performance.now() - t0);
+          noRecord++;
+        } else {
+          errors[code] = (errors[code] || 0) + 1;
+        }
       }
     }
   }
 
   await Promise.all(Array.from({ length: concurrency }, worker));
-  return lib.summarizeLoadStep({ concurrency, durationMs: Date.now() - start, latencies, errors });
+  return lib.summarizeLoadStep({ concurrency, durationMs: Date.now() - start, latencies, errors, noRecord, paced });
 }
 
 (async () => {
@@ -78,9 +86,9 @@ async function runStep(concurrency) {
     const st = await runStep(concurrency);
     steps.push(st);
     console.log(
-      `  ${String(concurrency).padStart(3)} parallel: ${st.queries} queries, ${st.achievedQps}/s, ` +
+      `  ${String(concurrency).padStart(3)} parallel: ${st.queries} queries, ${st.achievedQps}/s${st.paced ? ' (held at the queries/s ceiling)' : ''}, ` +
       `P50 ${st.latency.p50} ms, P95 ${st.latency.p95} ms, P99 ${st.latency.p99} ms, ` +
-      `errors ${st.failed} (${st.errorRate * 100}%)${st.failed ? ' ' + JSON.stringify(st.errorsByCode) : ''}`
+      `errors ${st.failed} (${st.errorRate * 100}%)${st.noRecord ? `, ${st.noRecord} no-record answers` : ''}${st.failed ? ' ' + JSON.stringify(st.errorsByCode) : ''}`
     );
     if (st.errorRate > config.stopErrorRate) {
       stopped = `Stopped at ${concurrency} parallel: error rate ${st.errorRate} is above ${config.stopErrorRate}. Resolver may be saturated or rate-limiting this IP.`;
@@ -91,6 +99,7 @@ async function runStep(concurrency) {
   }
 
   const degradation = lib.findDegradation(steps, { factor: config.degradeFactor, stopErrorRate: config.stopErrorRate });
+  const inconclusive = lib.rampInconclusive(steps);
   const summary = {
     resolver: config.resolverLabel,
     startedAt,
@@ -102,15 +111,22 @@ async function runStep(concurrency) {
     },
     steps,
     degradation,
+    inconclusive,
     stoppedEarly: stopped,
     interrupted,
   };
   fs.mkdirSync(config.outDir, { recursive: true });
   fs.writeFileSync(path.join(config.outDir, 'load-test-summary.json'), JSON.stringify(summary, null, 2));
 
+  if (inconclusive) {
+    console.warn(
+      `WARN: every step was held at the ${config.maxQps} queries/s ceiling, so the steps sent the same load ` +
+      'and differ only in parallelism. This run does not show capacity. Lower the parallel steps or raise MAX_QPS (hard limit 20) only with the resolver owner\'s agreement.'
+    );
+  }
   console.log(degradation
     ? `Latency or errors got worse at ${degradation.concurrency} parallel: ${degradation.reason}.`
-    : 'No degradation found within the tested steps.');
+    : `No degradation found within the tested steps${inconclusive ? ' (inconclusive: see the warning above)' : ''}.`);
   console.log(`Wrote ${path.join(config.outDir, 'load-test-summary.json')}`);
   process.exit(stopped ? 1 : 0);
 })();

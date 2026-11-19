@@ -343,3 +343,15 @@ test('classifyBlocked: empty answer is never a pass; v6 answer is ignored when o
   // Only v6 returned and no v6 listed: cannot be called a sinkhole.
   assert.strictEqual(lib.classifyBlocked({ addresses: ['2001:db8::1'] }, opts).result, 'block_failed');
 });
+
+test('load ramp: no steps is a config error, no-record answers are load, paced ramps are inconclusive', () => {
+  const base = { RESOLVER_DNS_IP: '192.0.2.1', CONFIRM_LOAD: 'yes', DNS_DOMAINS: 'a.example' };
+  assert.throws(() => lib.loadLoadConfig({ ...base, LOAD_MAX_CONCURRENCY: '3' }, noFs), /LOAD_MAX_CONCURRENCY=3/);
+  assert.deepStrictEqual(lib.loadLoadConfig({ ...base, LOAD_MAX_CONCURRENCY: '3', LOAD_STEPS: '1,3' }, noFs).steps, [1, 3]);
+  const st = lib.summarizeLoadStep({ concurrency: 5, durationMs: 1000, latencies: [10, 12], errors: {}, noRecord: 1, paced: true });
+  assert.strictEqual(st.noRecord, 1);
+  assert.strictEqual(st.paced, true);
+  assert.strictEqual(lib.rampInconclusive([st, { ...st, concurrency: 10 }]), true);
+  assert.strictEqual(lib.rampInconclusive([st, { ...st, paced: false }]), false);
+  assert.strictEqual(lib.rampInconclusive([st]), false);
+});

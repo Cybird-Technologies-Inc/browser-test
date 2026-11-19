@@ -108,6 +108,13 @@ with P50/P95/P99, errors and achieved queries per second per step, plus the firs
 P95 passes `DEGRADE_FACTOR` (2) times the first step's, or errors pass `STOP_ERROR_RATE`
 (0.05). The ramp stops at that error rate. It is never run by the timer.
 
+The queries/s ceiling (`MAX_QPS`, at most 20) is global, so it can hold several steps at the
+same load. A step held at the ceiling is marked `paced`. If every step is paced, the summary
+sets `inconclusive: true` and the run prints a warning: the steps differ only in parallelism,
+and "no degradation" does not show capacity. Answers of "no such name" (NXDOMAIN) or "no A
+record" count as answered load (`noRecord`), not as errors. `LOAD_MAX_CONCURRENCY` below 5
+without `LOAD_STEPS` is a config error (exit 2).
+
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `RESOLVER_DNS_IP` | required | IPv4 of the resolver under test (queried directly, not the OS resolver) |

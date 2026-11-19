@@ -516,6 +516,9 @@ function loadLoadConfig(env, fsLike) {
       errors.push(`LOAD_STEPS must be comma-separated whole numbers from 1 to ${maxConcurrency}.`);
     }
     if (steps.some((n, i) => i && n <= steps[i - 1])) errors.push('LOAD_STEPS must increase from step to step.');
+  } else if (!steps.length) {
+    // The default steps all sit above this limit: a run with no steps would exit 0 and look like a pass.
+    errors.push(`LOAD_MAX_CONCURRENCY=${maxConcurrency} is below the smallest default step (5). Set LOAD_STEPS (for example LOAD_STEPS=${maxConcurrency}) or raise LOAD_MAX_CONCURRENCY.`);
   }
   const config = {
     resolverIp: ip,
@@ -539,11 +542,16 @@ function loadLoadConfig(env, fsLike) {
 }
 
 // One ramp step. latencies = ms of answered queries; errors = count per error code.
-function summarizeLoadStep({ concurrency, durationMs, latencies, errors }) {
+// noRecord = answers that said "no such name / no A record": the resolver did answer, so they are
+// load, not errors. paced = true when workers had to wait for a send slot, i.e. the queries/s
+// ceiling (not the parallelism) set the load of this step.
+function summarizeLoadStep({ concurrency, durationMs, latencies, errors, noRecord = 0, paced = false }) {
   const failed = Object.values(errors).reduce((a, b) => a + b, 0);
   const total = latencies.length + failed;
   return {
     concurrency,
+    paced,
+    noRecord,
     queries: total,
     answered: latencies.length,
     failed,
@@ -567,8 +575,14 @@ function findDegradation(steps, { factor = 2, stopErrorRate = 0.05 } = {}) {
   return null;
 }
 
+// A ramp is only a ramp if the steps send different load. If every step was held back by the
+// queries/s ceiling, they differ in parallelism only, and "no degradation" proves nothing.
+function rampInconclusive(steps) {
+  return steps.length > 1 && steps.every(st => st.paced);
+}
+
 module.exports = {
-  maxOf,
+  maxOf, rampInconclusive,
   loadLoadConfig, summarizeLoadStep, findDegradation, LOAD_HARD_MAX_CONCURRENCY, LOAD_HARD_MAX_QPS,
   makeRng, sampleItems,
   DEFAULT_URLS, parseBlockedList, round, phase, percentile, average, hostnameFromUrl, csvEscape, dnsBuckets,
