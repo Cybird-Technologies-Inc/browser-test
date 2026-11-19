@@ -2,6 +2,7 @@ const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 const dns = require('dns');
+const net = require('net');
 const lib = require('./lib');
 const {
   round, phase, percentile, average, hostnameFromUrl, csvEscape, dnsBuckets,
@@ -984,8 +985,17 @@ async function runBlockedCheck({ host, category, run, expected = 'blocked' }) {
   let answer;
 
   try {
-    const records = await dns.promises.lookup(host, { all: true });
-    answer = { addresses: records.map(r => r.address) };
+    if (CONFIG.blockedLookup === 'resolver') {
+      // Direct query: skips the host cache, so every check reaches the resolver under test.
+      const r = new dns.promises.Resolver({ timeout: CONFIG.dnsLookupTimeoutMs, tries: 1 });
+      r.setServers([CONFIG.resolverIp]);
+      const wantV6 = CONFIG.blockPageIps.some(a => net.isIPv6(a));
+      const [v4, v6] = await Promise.all([r.resolve4(host), wantV6 ? r.resolve6(host).catch(() => []) : []]);
+      answer = { addresses: [...v4, ...v6] };
+    } else {
+      const records = await dns.promises.lookup(host, { all: true });
+      answer = { addresses: records.map(r => r.address) };
+    }
   } catch (error) {
     answer = { errorCode: error.code || 'UNKNOWN' };
   }

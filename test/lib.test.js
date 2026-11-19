@@ -366,3 +366,12 @@ test('list options: a directory or unreadable path is a config error; extra word
   assert.throws(() => lib.loadConfig({ BLOCKED_URLS: 'malware=a.example extra' }, noFs), /BLOCKED_URLS has an invalid domain/);
   assert.strictEqual(lib.loadConfig({ BLOCKED_URLS: 'malware=a.example' }, noFs).blocked[0].host, 'a.example');
 });
+
+test('BLOCKED_LOOKUP: defaults by RESOLVER_DNS_IP, rejects bad values', () => {
+  assert.strictEqual(lib.loadConfig({}, noFs).blockedLookup, 'system');
+  assert.strictEqual(lib.loadConfig({ RESOLVER_DNS_IP: '192.0.2.1' }, noFs).blockedLookup, 'resolver');
+  assert.strictEqual(lib.loadConfig({ RESOLVER_DNS_IP: '192.0.2.1', BLOCKED_LOOKUP: 'system' }, noFs).blockedLookup, 'system');
+  assert.throws(() => lib.loadConfig({ BLOCKED_LOOKUP: 'resolver' }, noFs), /needs RESOLVER_DNS_IP/);
+  assert.throws(() => lib.loadConfig({ BLOCKED_LOOKUP: 'x' }, noFs), /BLOCKED_LOOKUP/);
+  assert.throws(() => lib.loadConfig({ RESOLVER_DNS_IP: 'bad' }, noFs), /RESOLVER_DNS_IP/);
+});

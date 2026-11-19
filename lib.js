@@ -232,9 +232,20 @@ function loadConfig(env, fsLike) {
   const blocked = poolCats.flatMap(c => sampleItems(byCat[c], sampleBlocked, rng))
     .map(e => ({ ...e, expected: expectBlocked === null || expectBlocked.includes(e.category) ? 'blocked' : 'allowed' }));
 
+  // How blocked names are looked up. 'resolver' asks RESOLVER_DNS_IP directly, so the answer is the
+  // resolver's own and never a host-cache hit. 'system' uses the OS resolver (getaddrinfo).
+  // Default: 'resolver' when RESOLVER_DNS_IP is set (the deploy always sets it), else 'system'.
+  const resolverIp = (env.RESOLVER_DNS_IP || '').trim();
+  if (resolverIp && !(net.isIPv4(resolverIp))) errors.push('RESOLVER_DNS_IP must be an IPv4 address.');
+  const lookupMode = (env.BLOCKED_LOOKUP || (resolverIp ? 'resolver' : 'system')).trim().toLowerCase();
+  if (!['resolver', 'system'].includes(lookupMode)) errors.push('BLOCKED_LOOKUP must be "resolver" or "system".');
+  if (lookupMode === 'resolver' && !resolverIp) errors.push('BLOCKED_LOOKUP=resolver needs RESOLVER_DNS_IP.');
+
   const config = {
     urls,
     blocked,
+    blockedLookup: lookupMode,
+    resolverIp,
     blockPageIps: (env.BLOCK_PAGE_IPS || '').split(',').map(s => s.trim()).filter(Boolean),
     repeats: num('REPEATS', 1, { min: 1, integer: true }),
     concurrency: num('CONCURRENCY', 1, { min: 1, max: 50, integer: true }),

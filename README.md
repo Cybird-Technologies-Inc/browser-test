@@ -40,6 +40,7 @@ Every variable is optional. Defaults equal the old hardcoded values.
 | `SAMPLE_URLS` / `SAMPLE_BLOCKED` / `SAMPLE_DNS` | unset | Random real-user mix: use this many from the `URLS` / `DNS_DOMAINS` pool, or this many per category from the `BLOCKED_URLS` pool. Unset = use all |
 | `RANDOM_SEED` | random | Seed for the mix. It is logged and written to `summary.json`, so a run can be replayed |
 | `THINK_TIME_MAX_MS` | `0` | Each page waits a random 0 to this many ms after the first ones, like a user reading |
+| `BLOCKED_LOOKUP` | `resolver` if `RESOLVER_DNS_IP` is set, else `system` | `resolver` or `system`; see Blocked-domain check |
 | `BLOCK_PAGE_IPS` | unset | Comma list of the resolver's sinkhole IPs (list both IPv4 and IPv6 if it answers both) |
 
 A page counts as **failed** if it throws, times out, gets no main response, or
@@ -79,9 +80,12 @@ malware and phishing domains. For each lookup:
 
 Only the IP families listed in `BLOCK_PAGE_IPS` are compared. If you list only IPv4 sinkhole
 addresses, an extra IPv6 address in the answer is ignored; list the IPv6 address too if you
-want it judged. Lookups go through the host's resolver cache (same as Chromium), so repeated
-lookups of one name in a run can be served from cache. `run-all.sh` restarts the resolver
-before each target, which clears it between targets, not between repeats.
+want it judged.
+
+`BLOCKED_LOOKUP` picks how blocked names are looked up. `resolver` (the default whenever
+`RESOLVER_DNS_IP` is set, as the deploy does) asks that resolver directly, so a host cache can
+never answer for it. `system` uses the OS resolver like Chromium and can return cached answers.
+The page tests always use the OS resolver.
 
 The summary reports totals and a count per category, so a feed that stops
 blocking shows up even while the others still work. A warning is logged if
