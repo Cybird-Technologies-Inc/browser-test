@@ -21,6 +21,12 @@ try {
       'Set BLOCK_PAGE_IPS to that IP.'
     );
   }
+  if (CONFIG.blocked.some(b => b.expected === 'allowed') && !CONFIG.blockPageIps.length) {
+    console.warn(
+      'WARN: some blocked-pool categories are expected to be allowed but BLOCK_PAGE_IPS is not set. ' +
+      'A sinkholed answer cannot be recognised, so over-blocking will show as allowed_ok. Set BLOCK_PAGE_IPS.'
+    );
+  }
 } catch (error) {
   console.error(error.message);
   console.error('Fix the variables above and run again. Exit code 2 = configuration error.');

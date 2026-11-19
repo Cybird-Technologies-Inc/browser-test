@@ -75,10 +75,18 @@ malware and phishing domains. For each lookup:
 | Only addresses listed in `BLOCK_PAGE_IPS` (the sinkhole) | blocked OK |
 | Any other address, or a mix of sinkhole and real addresses | **block FAILED** |
 | Timeout or SERVFAIL | **block FAILED** (the resolver proved nothing) |
+| Empty answer (no addresses, no error) | **block FAILED** (or `over_blocked` for an allowed category): it proves nothing |
+
+Only the IP families listed in `BLOCK_PAGE_IPS` are compared. If you list only IPv4 sinkhole
+addresses, an extra IPv6 address in the answer is ignored; list the IPv6 address too if you
+want it judged. Lookups go through the host's resolver cache (same as Chromium), so repeated
+lookups of one name in a run can be served from cache. `run-all.sh` restarts the resolver
+before each target, which clears it between targets, not between repeats.
 
 The summary reports totals and a count per category, so a feed that stops
 blocking shows up even while the others still work. A warning is logged if
-`BLOCKED_URLS` is set without `BLOCK_PAGE_IPS`. Blocked entries never count in
+`BLOCKED_URLS` is set without `BLOCK_PAGE_IPS`, or when an allowed-expected category is
+in use without it (over-blocking cannot be seen then). Blocked entries never count in
 the DNS percentiles or the page failure rate. Set `MAX_BLOCK_FAILED=0` to alert.
 
 **Category switch test.** Every pool entry has a category, and the category decides the

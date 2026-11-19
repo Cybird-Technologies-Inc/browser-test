@@ -330,3 +330,16 @@ test('DNS_LOOKUP_TIMEOUT_MS: default, override and bad input', () => {
   assert.strictEqual(lib.loadConfig({ DNS_LOOKUP_TIMEOUT_MS: '2000' }, noFs).dnsLookupTimeoutMs, 2000);
   assert.throws(() => lib.loadConfig({ DNS_LOOKUP_TIMEOUT_MS: '5' }, noFs), /DNS_LOOKUP_TIMEOUT_MS/);
 });
+
+test('classifyBlocked: empty answer is never a pass; v6 answer is ignored when only v4 is listed', () => {
+  const opts = { blockPageIps: ['10.0.0.1'] };
+  assert.strictEqual(lib.classifyBlocked({ addresses: [] }, opts, 'allowed').result, 'over_blocked');
+  assert.strictEqual(lib.classifyBlocked({ addresses: [] }, opts, 'blocked').result, 'block_failed');
+  assert.match(lib.classifyBlocked({ addresses: [] }, opts).detail, /empty answer/);
+  // v4 sinkhole plus an unlisted v6 sinkhole address still counts as blocked.
+  assert.strictEqual(lib.classifyBlocked({ addresses: ['10.0.0.1', '2001:db8::1'] }, opts).result, 'blocked_ok');
+  // A real v4 address next to a v6 one is still a failed block.
+  assert.strictEqual(lib.classifyBlocked({ addresses: ['1.2.3.4', '2001:db8::1'] }, opts).result, 'block_failed');
+  // Only v6 returned and no v6 listed: cannot be called a sinkhole.
+  assert.strictEqual(lib.classifyBlocked({ addresses: ['2001:db8::1'] }, opts).result, 'block_failed');
+});

@@ -1,4 +1,5 @@
 'use strict';
+const net = require('node:net');
 // Pure helpers (no browser, no file or network access of their own) so that
 // node:test can cover them without launching Chromium.
 
@@ -275,19 +276,28 @@ function loadConfig(env, fsLike) {
 // proves nothing, so it fails the check too (and the detail says why).
 function classifyBlocked({ addresses = [], errorCode = null }, { blockPageIps = [] } = {}, expected = 'blocked') {
   const nxdomain = errorCode === 'ENOTFOUND';
-  const sinkholed = !errorCode && addresses.length > 0 && addresses.every(a => blockPageIps.includes(a));
+  // Judge only the IP families the operator listed: a v6 sinkhole answer must not turn a
+  // correct v4 block into a failure just because BLOCK_PAGE_IPS names only the v4 address.
+  const families = new Set(blockPageIps.map(a => net.isIP(a)));
+  const judged = families.size ? addresses.filter(a => families.has(net.isIP(a))) : addresses;
+  const compared = judged.length ? judged : addresses;
+  const sinkholed = !errorCode && compared.length > 0 && compared.every(a => blockPageIps.includes(a));
+  // An empty reply (NODATA) proves nothing either way: it is neither a block nor a real answer.
+  const empty = !errorCode && addresses.length === 0;
   if (expected === 'allowed') {
     // The category is switched off in the panel: a normal answer is the pass. A block or a
     // resolver error means the resolver filters when it should not (or proved nothing).
     if (nxdomain) return { result: 'over_blocked', detail: 'NXDOMAIN (category should be allowed)' };
     if (errorCode) return { result: 'over_blocked', detail: `resolver error ${errorCode}` };
+    if (empty) return { result: 'over_blocked', detail: 'empty answer, no addresses (category should be allowed)' };
     if (sinkholed) return { result: 'over_blocked', detail: 'sinkhole (category should be allowed)' };
-    return { result: 'allowed_ok', detail: `real answer ${addresses.join(' ') || 'none'}` };
+    return { result: 'allowed_ok', detail: `real answer ${addresses.join(' ')}` };
   }
   if (nxdomain) return { result: 'blocked_ok', detail: 'NXDOMAIN' };
   if (errorCode) return { result: 'block_failed', detail: `resolver error ${errorCode}` };
+  if (empty) return { result: 'block_failed', detail: 'empty answer, no addresses' };
   if (sinkholed) return { result: 'blocked_ok', detail: 'sinkhole' };
-  return { result: 'block_failed', detail: `real answer ${addresses.join(' ') || 'none'}` };
+  return { result: 'block_failed', detail: `real answer ${addresses.join(' ')}` };
 }
 
 // ------------------------------------------------------------------
