@@ -100,17 +100,29 @@ function parseNumber(raw, fallback, name, errors, { min = -Infinity, max = Infin
   return n;
 }
 
+// Items of a list option: lines of a file (# comments allowed) or a comma list. A path that
+// exists but cannot be read as a file (a directory, no permission) is a config error, not a crash.
+function readListItems(raw, name, errors, fsLike) {
+  const isDir = !!(fsLike.statSync && fsLike.existsSync(raw) && fsLike.statSync(raw).isDirectory());
+  if (isDir) {
+    errors.push(`${name} "${raw}" is a directory. Give a file with one entry per line, or a comma list.`);
+    return [];
+  }
+  if (fsLike.existsSync(raw)) {
+    try {
+      return fsLike.readFileSync(raw, 'utf8').split('\n').map(l => l.replace(/#.*$/, '').trim()).filter(Boolean);
+    } catch (error) {
+      errors.push(`${name} "${raw}" cannot be read (${error.code || error.message}). Check the path and permissions.`);
+      return [];
+    }
+  }
+  return raw.split(',').map(x => x.trim()).filter(Boolean);
+}
+
 // A value is a file path if that file exists, otherwise a comma list.
 // Files allow one URL per line and # comments, which suits a long list kept in git.
 function parseUrlList(raw, name, errors, fsLike) {
-  let items;
-  if (fsLike.existsSync(raw)) {
-    items = fsLike.readFileSync(raw, 'utf8').split('\n')
-      .map(l => l.replace(/#.*$/, '').trim());
-  } else {
-    items = raw.split(',').map(s => s.trim());
-  }
-  items = items.filter(Boolean);
+  const items = readListItems(raw, name, errors, fsLike);
   for (const u of items) {
     let ok = false;
     try {
@@ -125,13 +137,12 @@ function parseUrlList(raw, name, errors, fsLike) {
 // client-test domains.txt). Name = domain or URL; no category means "uncategorized".
 // Same sources as URLS: a comma list, or a file with one entry per line and # comments.
 function parseBlockedList(raw, errors, fsLike) {
-  const lines = fsLike.existsSync(raw)
-    ? fsLike.readFileSync(raw, 'utf8').split('\n').map(l => l.replace(/#.*$/, '').trim())
-    : raw.split(',').map(x => x.trim());
+  const lines = readListItems(raw, 'BLOCKED_URLS', errors, fsLike);
 
   const entries = [];
-  for (const item of lines.filter(Boolean)) {
-    const m = item.match(/^([A-Za-z0-9_-]+)(?:=|\s+)(.+)$/);
+  for (const item of lines) {
+    // The name is a single word. "category name extra" is a mistake to report, not a category called category.
+    const m = item.match(/^([A-Za-z0-9_-]+)(?:=|\s+)(\S+)$/);
     const category = (m ? m[1] : 'uncategorized').toLowerCase();
     const name = m ? m[2] : item;
     let host = null;
@@ -158,9 +169,7 @@ function parseStatusList(raw, errors) {
 
 // Plain domains, comma list or file (one per line, # comments).
 function parseDomainList(raw, errors, fsLike) {
-  const items = (fsLike.existsSync(raw)
-    ? fsLike.readFileSync(raw, 'utf8').split('\n').map(l => l.replace(/#.*$/, '').trim())
-    : raw.split(',').map(x => x.trim())).filter(Boolean);
+  const items = readListItems(raw, 'DNS_DOMAINS', errors, fsLike);
   for (const d of items) {
     if (!/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i.test(d) || d.length > 253) errors.push(`DNS_DOMAINS has an invalid domain "${d}".`);
   }

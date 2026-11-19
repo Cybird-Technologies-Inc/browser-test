@@ -355,3 +355,14 @@ test('load ramp: no steps is a config error, no-record answers are load, paced r
   assert.strictEqual(lib.rampInconclusive([st, { ...st, paced: false }]), false);
   assert.strictEqual(lib.rampInconclusive([st]), false);
 });
+
+test('list options: a directory or unreadable path is a config error; extra words in a pool line are rejected', () => {
+  const dirFs = { existsSync: () => true, statSync: () => ({ isDirectory: () => true }), readFileSync: () => { throw Object.assign(new Error('x'), { code: 'EISDIR' }); } };
+  assert.throws(() => lib.loadConfig({ URLS: 'profiles' }, dirFs), /URLS "profiles" is a directory/);
+  assert.throws(() => lib.loadConfig({ BLOCKED_URLS: 'profiles' }, dirFs), /BLOCKED_URLS "profiles" is a directory/);
+  assert.throws(() => lib.loadConfig({ DNS_DOMAINS: 'profiles' }, dirFs), /DNS_DOMAINS "profiles" is a directory/);
+  const denyFs = { existsSync: () => true, readFileSync: () => { throw Object.assign(new Error('x'), { code: 'EACCES' }); } };
+  assert.throws(() => lib.loadConfig({ URLS: 'x.txt' }, denyFs), /EACCES/);
+  assert.throws(() => lib.loadConfig({ BLOCKED_URLS: 'malware=a.example extra' }, noFs), /BLOCKED_URLS has an invalid domain/);
+  assert.strictEqual(lib.loadConfig({ BLOCKED_URLS: 'malware=a.example' }, noFs).blocked[0].host, 'a.example');
+});
