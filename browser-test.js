@@ -1026,26 +1026,37 @@ async function runBlockedCheck({ host, category, run, expected = 'blocked' }) {
   };
 }
 
-// DNS-only timing of plain domains through the OS resolver (getaddrinfo, same as Chromium).
-// Run after the page tests so the two never compete for the resolver.
+// DNS-only timing of plain domains. DNS_CHECK_LOOKUP=resolver asks RESOLVER_DNS_IP directly (no host cache),
+// so the first lookup of a name and its repeats are the resolver's own cache-miss and cache-hit times;
+// 'system' uses getaddrinfo like Chromium. Run after the page tests so the two never compete for the resolver.
+// One pass at a time, so a repeat never starts before the first lookup of the same name has finished.
 async function runDnsChecks() {
-  const jobs = [];
-  for (let i = 0; i < CONFIG.dnsRepeats; i++) for (const host of CONFIG.dnsDomains) jobs.push(host);
-  const out = new Array(jobs.length);
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(CONFIG.concurrency, jobs.length) }, async () => {
-    while (next < jobs.length) {
-      const i = next++;
-      const started = performance.now();
-      try {
-        // Own timeout: a dead resolver must not stall the whole run until TARGET_TIMEOUT kills it.
-        await lib.withTimeout(dns.promises.lookup(jobs[i], { all: true }), CONFIG.dnsLookupTimeoutMs, 'DNS lookup timeout');
-        out[i] = { host: jobs[i], ok: true, ms: round(performance.now() - started) };
-      } catch (error) {
-        out[i] = { host: jobs[i], ok: false, ms: null, errorCode: error.code || (error.message === 'DNS lookup timeout' ? 'ETIMEOUT' : 'UNKNOWN') };
+  const direct = CONFIG.dnsCheckLookup === 'resolver';
+  let resolver = null;
+  if (direct) {
+    resolver = new dns.promises.Resolver({ timeout: CONFIG.dnsLookupTimeoutMs, tries: 1 });
+    resolver.setServers([CONFIG.resolverIp]);
+  }
+  const out = [];
+  for (let pass = 0; pass < CONFIG.dnsRepeats; pass++) {
+    const passOut = new Array(CONFIG.dnsDomains.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(CONFIG.concurrency, CONFIG.dnsDomains.length) }, async () => {
+      while (next < CONFIG.dnsDomains.length) {
+        const i = next++;
+        const host = CONFIG.dnsDomains[i];
+        const started = performance.now();
+        try {
+          // Own timeout: a dead resolver must not stall the whole run until TARGET_TIMEOUT kills it.
+          await lib.withTimeout(direct ? resolver.resolve4(host) : dns.promises.lookup(host, { all: true }), CONFIG.dnsLookupTimeoutMs, 'DNS lookup timeout');
+          passOut[i] = { host, pass, ok: true, ms: round(performance.now() - started) };
+        } catch (error) {
+          passOut[i] = { host, pass, ok: false, ms: null, errorCode: error.code || (error.message === 'DNS lookup timeout' ? 'ETIMEOUT' : 'UNKNOWN') };
+        }
       }
-    }
-  }));
+    }));
+    out.push(...passOut);
+  }
   return lib.summarizeDnsChecks(out);
 }
 
@@ -1310,7 +1321,7 @@ Files created in ${CONFIG.outDir}:
   summary.json
 
 Resolver ${RESOLVER_LABEL}: ${stats.global.failed}/${stats.global.attempts} pages failed, P95 DNS ${stats.global.dns.p95 ?? '-'} ms
-${failures.advice.map(a => `Why: ${a}`).join('\n')}${CONFIG.dnsDomains.length ? `\nDNS-only checks: ${dnsChecks.failed}/${dnsChecks.total} failed, P95 ${dnsChecks.p95 ?? '-'} ms` : ''}
+${failures.advice.map(a => `Why: ${a}`).join('\n')}${CONFIG.dnsDomains.length ? `\nDNS-only checks: ${dnsChecks.failed}/${dnsChecks.total} failed, P95 ${dnsChecks.p95 ?? '-'} ms (first ${dnsChecks.first.p95 ?? '-'}, repeat ${dnsChecks.repeat?.p95 ?? '-'})` : ''}
 ${summaryJson.trend ? `Trend vs ${summaryJson.trend.previousStartedAt}: ${summaryJson.trend.notes.join('; ') || 'no change'}\n` : ''}Category checks: ${blocked.blockedOk} blocked OK, ${blocked.allowedOk} allowed OK, ${blocked.blockFailed} WRONG (of ${blocked.total}; ${blocked.overBlocked} blocked that should be allowed)
 ${Object.entries(blocked.perCategory).map(([c, v]) => `  ${c} (expected ${v.expected}): ${v.expected === 'blocked' ? v.blockedOk : v.allowedOk}/${v.total} correct`).join('\n')}
 `);

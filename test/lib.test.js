@@ -185,6 +185,33 @@ test('DNS_DOMAINS and MAX_DNS_CHECK_FAIL_RATE: parsing, summary, threshold, host
   assert.deepStrictEqual(lib.checkThresholds(g, {}, null, d), []);
 });
 
+test('DNS check split: first vs repeat, and DNS_CHECK_LOOKUP default and validation', () => {
+  const d = lib.summarizeDnsChecks([
+    { host: 'a.example', pass: 0, ok: true, ms: 300 }, { host: 'b.example', pass: 0, ok: false, ms: null, errorCode: 'ETIMEOUT' },
+    { host: 'a.example', pass: 1, ok: true, ms: 1 }, { host: 'b.example', pass: 1, ok: true, ms: 3 },
+  ]);
+  assert.deepStrictEqual([d.first.total, d.first.failed, d.first.p50], [2, 1, 300]);
+  assert.deepStrictEqual([d.repeat.total, d.repeat.failed, d.repeat.p95], [2, 0, 2.9]);
+  // One pass only: no repeat block, and results without a pass field count as first.
+  const one = lib.summarizeDnsChecks([{ host: 'a.example', ok: true, ms: 5 }]);
+  assert.strictEqual(one.repeat, null);
+  assert.strictEqual(one.first.total, 1);
+  assert.strictEqual(lib.loadConfig({}, noFs).dnsCheckLookup, 'system');
+  assert.strictEqual(lib.loadConfig({ RESOLVER_DNS_IP: '192.0.2.1' }, noFs).dnsCheckLookup, 'resolver');
+  assert.strictEqual(lib.loadConfig({ RESOLVER_DNS_IP: '192.0.2.1', DNS_CHECK_LOOKUP: 'system' }, noFs).dnsCheckLookup, 'system');
+  assert.throws(() => lib.loadConfig({ DNS_CHECK_LOOKUP: 'resolver' }, noFs), /needs RESOLVER_DNS_IP/);
+  assert.throws(() => lib.loadConfig({ DNS_CHECK_LOOKUP: 'x' }, noFs), /DNS_CHECK_LOOKUP/);
+});
+
+test('pool files: parse cleanly, malware and phishing names are present, no real brands in the control set', () => {
+  const fsReal = require('node:fs');
+  const c = lib.loadConfig({ BLOCKED_URLS: 'profiles/pool-blocked.txt', URLS: 'profiles/pool-urls.txt' }, fsReal);
+  const names = c.blocked.map(e => e.host);
+  assert.ok(names.includes('phish.threatzone.org') && names.includes('malware.threatzone.org'));
+  // Names a malware or phishing source lists (found 2026-11-19) must not serve as "allowed" controls.
+  for (const n of ['binance.com', 'coinbase.com', 'bet365.com', 'wicar.org', 'phish.opendns.com']) assert.ok(!names.includes(n), n);
+});
+
 test('compareRuns: deltas, newly failing, recovered, and no trend when not comparable', () => {
   const run = (resolver, failureRate, p95, perUrl) => ({
     resolver, startedAt: 't', global: { failureRate, dns: { p95 } }, perUrl,
