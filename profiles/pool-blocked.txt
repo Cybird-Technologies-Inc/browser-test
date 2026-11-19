@@ -8,18 +8,22 @@
 # resolve normally. "control" names belong to no feed, so they must always resolve: if one is
 # blocked, the resolver is over-blocking. Leave "control" out of EXPECT_BLOCKED_CATEGORIES.
 #
-# Names: the malware, phishing and adult test names are vendor test names (Cisco Umbrella /
-# OpenDNS, WICAR, EICAR). The rest are well-known public sites placed in the category they are
-# usually filed under (proxy = VPN and anonymizer services). Whether a feed lists a given site
-# is the feed's decision, so a mismatch can be a feed difference, not a bug. All resolved on
-# public DNS when checked. A name that stops existing would look "blocked" (NXDOMAIN), so
-# re-check the pool now and then.
-malware   examplebotnetdomain.com
+# Names: malware and phishing names are test names that the Cybird ThreatIntel feeds list on
+# purpose (threatzone.org is Cybird's own pair, flagged on every install) or names found in
+# a feed source on 2026-11-19 (checked by exact name: malware.wicar.org, not wicar.org).
+# Do not use a real brand here: crypto exchanges (binance, coinbase) are in a malware source
+# and bet365 is in a phishing source, so a key with only malware and phishing blocks them.
+# The rest are well-known public sites placed in the category they are usually filed under
+# (proxy = VPN and anonymizer services); whether a feed lists a given site is the feed's
+# decision, so a mismatch can be a feed difference, not a bug. All resolved on public DNS
+# when checked. A name that stops existing would look "blocked" (NXDOMAIN), so re-check the
+# pool now and then.
 malware   examplemalwaredomain.com
 malware   internetbadguys.com
 malware   secure.eicar.org
-malware   wicar.org
-phishing  phish.opendns.com
+malware   malware.threatzone.org
+malware   malware.wicar.org
+phishing  phish.threatzone.org
 ads       ads.twitter.com
 ads       adservice.google.com
 ads       doubleclick.net
@@ -30,16 +34,13 @@ social    x.com
 proxy     expressvpn.com
 proxy     nordvpn.com
 proxy     protonvpn.com
-gambling  bet365.com
 gambling  draftkings.com
 gambling  pokerstars.com
 adult     exampleadultsite.com
 adult     pornhub.com
 adult     xvideos.com
 control   bbc.com
-control   binance.com
 control   cnn.com
-control   coinbase.com
 control   epicgames.com
 control   hotstar.com
 control   netflix.com

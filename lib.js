@@ -240,11 +240,17 @@ function loadConfig(env, fsLike) {
   const lookupMode = (env.BLOCKED_LOOKUP || (resolverIp ? 'resolver' : 'system')).trim().toLowerCase();
   if (!['resolver', 'system'].includes(lookupMode)) errors.push('BLOCKED_LOOKUP must be "resolver" or "system".');
   if (lookupMode === 'resolver' && !resolverIp) errors.push('BLOCKED_LOOKUP=resolver needs RESOLVER_DNS_IP.');
+  // Same choice for DNS-only timing (DNS_DOMAINS). The OS resolver caches, so its repeats say nothing about
+  // the resolver under test; 'resolver' asks RESOLVER_DNS_IP directly so "first" and "repeat" are the resolver's own.
+  const dnsCheckMode = (env.DNS_CHECK_LOOKUP || (resolverIp ? 'resolver' : 'system')).trim().toLowerCase();
+  if (!['resolver', 'system'].includes(dnsCheckMode)) errors.push('DNS_CHECK_LOOKUP must be "resolver" or "system".');
+  if (dnsCheckMode === 'resolver' && !resolverIp) errors.push('DNS_CHECK_LOOKUP=resolver needs RESOLVER_DNS_IP.');
 
   const config = {
     urls,
     blocked,
     blockedLookup: lookupMode,
+    dnsCheckLookup: dnsCheckMode,
     resolverIp,
     blockPageIps: (env.BLOCK_PAGE_IPS || '').split(',').map(s => s.trim()).filter(Boolean),
     repeats: num('REPEATS', 1, { min: 1, integer: true }),
@@ -482,7 +488,7 @@ function summarizeFailures(pages) {
 }
 
 // results: [{host, ok, ms, errorCode}] from DNS-only lookups.
-function summarizeDnsChecks(results) {
+function dnsCheckStats(results) {
   const ok = results.filter(r => r.ok);
   const ms = ok.map(r => r.ms);
   return {
@@ -492,7 +498,20 @@ function summarizeDnsChecks(results) {
     p50: percentile(ms, 0.5),
     p95: percentile(ms, 0.95),
     max: ms.length ? round(maxOf(ms)) : null,
+  };
+}
+
+// Each result has a `pass` (0 = the first lookup of that name this run). "first" and "repeat" are reported
+// apart so a resolver's cache-miss time can be read beside its cache-hit time (first is not guaranteed cold:
+// a busy resolver may already hold the name). `repeat` is null when there was only one pass.
+function summarizeDnsChecks(results) {
+  const first = results.filter(r => !r.pass);
+  const repeat = results.filter(r => r.pass > 0);
+  return {
+    ...dnsCheckStats(results),
     failedDomains: [...new Set(results.filter(r => !r.ok).map(r => `${r.host} (${r.errorCode})`))],
+    first: dnsCheckStats(first),
+    repeat: repeat.length ? dnsCheckStats(repeat) : null,
   };
 }
 

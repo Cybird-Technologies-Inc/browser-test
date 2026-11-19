@@ -33,6 +33,7 @@ Every variable is optional. Defaults equal the old hardcoded values.
 | `DNS_DOMAINS` | unset | Plain domains for DNS-only timing (comma list or file). Runs after the page tests, no browser |
 | `DNS_REPEATS` | `3` | Lookups per `DNS_DOMAINS` entry |
 | `DNS_LOOKUP_TIMEOUT_MS` | `5000` | Per-lookup limit for DNS-only checks; a timeout counts as a failed lookup |
+| `DNS_CHECK_LOOKUP` | `resolver` if `RESOLVER_DNS_IP` is set, else `system` | How `DNS_DOMAINS` are timed. `resolver` asks that resolver directly (no host cache), so `summary.json` can split `dnsChecks.first` from `dnsChecks.repeat`. `system` uses the OS resolver, whose cache hides the resolver's own times |
 | `MAX_DNS_CHECK_FAIL_RATE` | unset | Fail if DNS-only lookups that failed / total (0 to 1) is above this |
 | `BLOCKED_URLS` | unset | Domains the resolver should block, as `category=domain` entries (comma list, or a file). See below |
 | `MAX_BLOCK_FAILED` | unset | Fail if more than this many blocked domains were answered. Use `0` whenever `BLOCKED_URLS` is set |
@@ -87,6 +88,9 @@ want it judged.
 never answer for it. `system` uses the OS resolver like Chromium and can return cached answers.
 The page tests always use the OS resolver.
 
+Names on the pool are checked by exact name against the feed sources. A source that lists
+`malware.example` does not block `example`; use the listed name.
+
 The summary reports totals and a count per category, so a feed that stops
 blocking shows up even while the others still work. A warning is logged if
 `BLOCKED_URLS` is set without `BLOCK_PAGE_IPS`, or when an allowed-expected category is
@@ -103,6 +107,15 @@ reach the resolver and to leave caches, so expect a few wrong cycles right after
 `SAMPLE_BLOCKED` picks per category, so every
 category is checked in every cycle. Pool files: `profiles/pool-urls.txt`,
 `profiles/pool-blocked.txt`, `profiles/pool-dns.txt`.
+
+### First and repeat lookups
+
+With `DNS_DOMAINS` and `DNS_REPEATS` of 2 or more, each name is looked up in passes. `dnsChecks.first`
+is the first pass and `dnsChecks.repeat` the later ones (total, failed, P50, P95, max). With
+`DNS_CHECK_LOOKUP=resolver` these are the resolver's own times: the first is its cache-miss time
+unless a subscriber asked for the name just before, and the repeat is its cache-hit time. Read the
+first-lookup P95 against a cold-lookup baseline, not against a big public resolver's warm cache.
+The page tests still use the OS resolver, and their P95 (`MAX_P95_DNS_MS`) is unchanged.
 
 ### DNS load ramp (on demand)
 
