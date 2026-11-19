@@ -935,7 +935,7 @@ P50     : ${percentile(values, 0.50)} ms
 P90     : ${percentile(values, 0.90)} ms
 P95     : ${percentile(values, 0.95)} ms
 P99     : ${percentile(values, 0.99)} ms
-Maximum : ${round(Math.max(...values))} ms
+Maximum : ${round(lib.maxOf(values))} ms
 
 Distribution
 ------------
@@ -1022,10 +1022,11 @@ async function runDnsChecks() {
       const i = next++;
       const started = performance.now();
       try {
-        await dns.promises.lookup(jobs[i], { all: true });
+        // Own timeout: a dead resolver must not stall the whole run until TARGET_TIMEOUT kills it.
+        await lib.withTimeout(dns.promises.lookup(jobs[i], { all: true }), CONFIG.dnsLookupTimeoutMs, 'DNS lookup timeout');
         out[i] = { host: jobs[i], ok: true, ms: round(performance.now() - started) };
       } catch (error) {
-        out[i] = { host: jobs[i], ok: false, ms: null, errorCode: error.code || 'UNKNOWN' };
+        out[i] = { host: jobs[i], ok: false, ms: null, errorCode: error.code || (error.message === 'DNS lookup timeout' ? 'ETIMEOUT' : 'UNKNOWN') };
       }
     }
   }));

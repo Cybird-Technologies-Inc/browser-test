@@ -318,3 +318,15 @@ test('summarizeBlocked lists each missed check with its category and detail', ()
     { host: 'a.test', category: 'malware', expected: 'blocked', result: 'block_failed', detail: 'real answer 1.2.3.4' },
   ]);
 });
+
+test('maxOf handles huge arrays that Math.max(...x) cannot', () => {
+  const big = new Array(500000).fill(1); big[7] = 99;
+  assert.strictEqual(lib.maxOf(big), 99);
+  assert.throws(() => Math.max(...new Array(5e6).fill(1)), RangeError);
+});
+
+test('DNS_LOOKUP_TIMEOUT_MS: default, override and bad input', () => {
+  assert.strictEqual(lib.loadConfig({}, noFs).dnsLookupTimeoutMs, 5000);
+  assert.strictEqual(lib.loadConfig({ DNS_LOOKUP_TIMEOUT_MS: '2000' }, noFs).dnsLookupTimeoutMs, 2000);
+  assert.throws(() => lib.loadConfig({ DNS_LOOKUP_TIMEOUT_MS: '5' }, noFs), /DNS_LOOKUP_TIMEOUT_MS/);
+});

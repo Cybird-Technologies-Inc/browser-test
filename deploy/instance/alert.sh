@@ -27,7 +27,7 @@ else
   case "$code" in
     1) meaning="threshold exceeded" ;;
     2) meaning="config error (check the target file and /etc/browser-test/env)" ;;
-    124) meaning="timeout (run exceeded TARGET_TIMEOUT)" ;;
+    124|137) meaning="timeout (run exceeded TARGET_TIMEOUT and was killed)" ;;
     125) meaning="could not switch the host resolver to this target" ;;
     *) meaning="crash" ;;
   esac

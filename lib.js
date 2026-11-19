@@ -9,6 +9,13 @@ const DEFAULT_URLS = [
   'https://www.youtube.com',
 ];
 
+// Loop, not Math.max(...values): spreading hundreds of thousands of values throws RangeError.
+function maxOf(values) {
+  let m = -Infinity;
+  for (const v of values) if (v > m) m = v;
+  return m;
+}
+
 function round(value) {
   if (value === null || value === undefined || Number.isNaN(value)) return null;
   return Math.round(value * 100) / 100;
@@ -240,6 +247,7 @@ function loadConfig(env, fsLike) {
     // A user pauses between pages: each page waits a random 0..max ms (per browser). 0 = no pause.
     thinkTimeMaxMs: num('THINK_TIME_MAX_MS', 0, { min: 0, max: 600000, integer: true }),
     dnsRepeats: num('DNS_REPEATS', 3, { min: 1, max: 100, integer: true }),
+    dnsLookupTimeoutMs: num('DNS_LOOKUP_TIMEOUT_MS', 5000, { min: 100, max: 60000, integer: true }),
     maxDnsCheckFailRate: num('MAX_DNS_CHECK_FAIL_RATE', null, { min: 0, max: 1 }),
     // null means "no limit": thresholds are opt-in so existing runs keep exiting 0.
     maxP95DnsMs: num('MAX_P95_DNS_MS', null, { min: 0 }),
@@ -298,7 +306,7 @@ function dnsStats(values) {
     p50: percentile(values, 0.5),
     p95: percentile(values, 0.95),
     p99: percentile(values, 0.99),
-    max: values.length ? round(Math.max(...values)) : null,
+    max: values.length ? round(maxOf(values)) : null,
   };
 }
 
@@ -453,7 +461,7 @@ function summarizeDnsChecks(results) {
     failureRate: rate(results.length - ok.length, results.length),
     p50: percentile(ms, 0.5),
     p95: percentile(ms, 0.95),
-    max: ms.length ? round(Math.max(...ms)) : null,
+    max: ms.length ? round(maxOf(ms)) : null,
     failedDomains: [...new Set(results.filter(r => !r.ok).map(r => `${r.host} (${r.errorCode})`))],
   };
 }
@@ -550,6 +558,7 @@ function findDegradation(steps, { factor = 2, stopErrorRate = 0.05 } = {}) {
 }
 
 module.exports = {
+  maxOf,
   loadLoadConfig, summarizeLoadStep, findDegradation, LOAD_HARD_MAX_CONCURRENCY, LOAD_HARD_MAX_QPS,
   makeRng, sampleItems,
   DEFAULT_URLS, parseBlockedList, round, phase, percentile, average, hostnameFromUrl, csvEscape, dnsBuckets,

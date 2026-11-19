@@ -147,8 +147,10 @@ for f in "${files[@]}"; do
   declare -a envargs=()
   for k in "${!ENVMAP[@]}"; do envargs+=("$k=${ENVMAP[$k]}"); done
 
+  # 9>&- : children must not inherit the lock fd, or a surviving Chromium would hold the lock
+  # after a kill and every later cycle would skip silently.
   rc=0
-  (cd "$APP" && timeout --kill-after=30 "$TARGET_TIMEOUT" "${RUN_AS_A[@]}" env "PATH=$PATH" "${envargs[@]}" "${NPM_A[@]}") || rc=$?
+  (cd "$APP" && timeout --kill-after=30 "$TARGET_TIMEOUT" "${RUN_AS_A[@]}" env "PATH=$PATH" "${envargs[@]}" "${NPM_A[@]}" 9>&-) || rc=$?
   log INFO "Target $label: npm exited with $rc"
 
   # Upload on every exit code: a failed run is when the data matters.

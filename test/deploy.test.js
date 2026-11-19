@@ -216,7 +216,7 @@ function runAll({ targets, npmRc = {}, lockHeld = false, noBucket = false }) {
       return p;
     };
     // Fake npm: records the label, writes summary.json, exits with the configured code.
-    const npm = mk('fake-npm', `echo "npm label=$RESOLVER_LABEL out=$OUT_DIR seed=$RANDOM_SEED" >> "${log}"
+    const npm = mk('fake-npm', `echo "npm label=$RESOLVER_LABEL out=$OUT_DIR seed=$RANDOM_SEED fd9=$([ -e /proc/self/fd/9 ] && echo open || echo closed)" >> "${log}"
 rc=$(node -e 'console.log((JSON.parse(require("fs").readFileSync(process.argv[1]))[process.argv[2]])||0)' "${rcFile}" "$RESOLVER_LABEL")
 echo '{"thresholdViolations":[]}' > "$OUT_DIR/summary.json"; echo x > "$OUT_DIR/page-summary.csv"; echo x > "$OUT_DIR/request-details.csv"
 exit $rc`);
@@ -334,4 +334,15 @@ test('run-all.sh: every target in a cycle gets the same random seed unless it se
   assert.match(seeds.a, /^\d{9,10}$/);
   assert.strictEqual(seeds.a, seeds.b);
   assert.strictEqual(seeds.c, '42');
+});
+
+test('run-all.sh: the run lock fd is not inherited by the test process', () => {
+  const { r, calls } = runAll({ targets: { 'a.env': 'RESOLVER_DNS_IP=192.0.2.1\n' } });
+  assert.strictEqual(r.status, 0, r.stderr);
+  assert.ok(calls.some((c) => c.startsWith('npm ') && c.endsWith('fd9=closed')), calls.join('\n'));
+});
+
+test('alert.sh: exit 137 (killed after timeout) is reported as a timeout, not a crash', () => {
+  const src = fs.readFileSync(path.join(deployDir, 'instance', 'alert.sh'), 'utf8');
+  assert.match(src, /124\|137\) meaning="timeout/);
 });

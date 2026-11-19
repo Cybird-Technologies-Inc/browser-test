@@ -32,6 +32,7 @@ Every variable is optional. Defaults equal the old hardcoded values.
 | `IGNORE_HTTP_STATUS` | unset | Comma list of HTTP error codes (400-599) that do not count as failures, for example `403` for a site that blocks datacenter clients |
 | `DNS_DOMAINS` | unset | Plain domains for DNS-only timing (comma list or file). Runs after the page tests, no browser |
 | `DNS_REPEATS` | `3` | Lookups per `DNS_DOMAINS` entry |
+| `DNS_LOOKUP_TIMEOUT_MS` | `5000` | Per-lookup limit for DNS-only checks; a timeout counts as a failed lookup |
 | `MAX_DNS_CHECK_FAIL_RATE` | unset | Fail if DNS-only lookups that failed / total (0 to 1) is above this |
 | `BLOCKED_URLS` | unset | Domains the resolver should block, as `category=domain` entries (comma list, or a file). See below |
 | `MAX_BLOCK_FAILED` | unset | Fail if more than this many blocked domains were answered. Use `0` whenever `BLOCKED_URLS` is set |
