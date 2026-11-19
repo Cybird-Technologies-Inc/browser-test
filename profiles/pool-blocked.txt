@@ -1,0 +1,48 @@
+# Category test pool for BLOCKED_URLS (one entry per line: category domain).
+# Looked up in DNS only, never opened in a browser.
+#
+# Categories match the panel's feed topics: phishing, malware, ads, social, proxy, gambling, adult.
+# ("combined" is not here: its contents are not known. Add names for it from the feed itself.)
+# The category (first word) decides what is expected. EXPECT_BLOCKED_CATEGORIES lists the
+# categories the key allows: names in them must be blocked, names in every other category must
+# resolve normally. "control" names belong to no feed, so they must always resolve: if one is
+# blocked, the resolver is over-blocking. Leave "control" out of EXPECT_BLOCKED_CATEGORIES.
+#
+# Names: the malware, phishing and adult test names are vendor test names (Cisco Umbrella /
+# OpenDNS, WICAR, EICAR). The rest are well-known public sites placed in the category they are
+# usually filed under (proxy = VPN and anonymizer services). Whether a feed lists a given site
+# is the feed's decision, so a mismatch can be a feed difference, not a bug. All resolved on
+# public DNS when checked. A name that stops existing would look "blocked" (NXDOMAIN), so
+# re-check the pool now and then.
+malware   examplebotnetdomain.com
+malware   examplemalwaredomain.com
+malware   internetbadguys.com
+malware   secure.eicar.org
+malware   wicar.org
+phishing  phish.opendns.com
+ads       ads.twitter.com
+ads       adservice.google.com
+ads       doubleclick.net
+social    facebook.com
+social    instagram.com
+social    tiktok.com
+social    x.com
+proxy     expressvpn.com
+proxy     nordvpn.com
+proxy     protonvpn.com
+gambling  bet365.com
+gambling  draftkings.com
+gambling  pokerstars.com
+adult     exampleadultsite.com
+adult     pornhub.com
+adult     xvideos.com
+control   bbc.com
+control   binance.com
+control   cnn.com
+control   coinbase.com
+control   epicgames.com
+control   hotstar.com
+control   netflix.com
+control   primevideo.com
+control   roblox.com
+control   steampowered.com
