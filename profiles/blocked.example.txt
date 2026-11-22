@@ -1,8 +1,0 @@
-# Feed-category check list for BLOCKED_URLS (one entry per line: category domain).
-# Take real names from the resolver's own feeds, for example the shield's
-#   client-test-results/<run>/domains.txt   (lines look like: malware bad.example)
-# These names are only looked up in DNS, never opened in a browser.
-# Include several per category so a single stale entry does not hide a broken feed.
-#
-# malware   replace-with-a-malware-feed-domain.example
-# phishing  replace-with-a-phishing-feed-domain.example
