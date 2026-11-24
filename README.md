@@ -185,6 +185,8 @@ node run.js 203.0.113.10 --duration 10m --rounds 2 --start-at 14:30
 # open out/run-<timestamp>/report.html
 ```
 
+Add `--compare 8.8.8.8` (any public resolver you choose) to test a reference too. Each cycle asks both resolvers for the same names, and the report shows them side by side with the difference. The reference is not given the category check.
+
 `node run.js --help` lists every option. `results.json` and each cycle's `summary.json` and `run.log` sit next to the report.
 It sets `PAGE_LOADS=false`, so no browser is started. Add `--blocked-urls profiles/pool-blocked.txt --expect-blocked malware,phishing` for the category check.
 

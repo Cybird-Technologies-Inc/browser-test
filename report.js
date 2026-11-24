@@ -27,7 +27,7 @@ const FLAGS = {
   '--label': 'label', '--duration': 'duration', '--rounds': 'rounds', '--gap': 'gap', '--interval': 'interval',
   '--start-at': 'startAt', '--out': 'out', '--dns-domains': 'dnsDomains', '--blocked-urls': 'blockedUrls',
   '--expect-blocked': 'expectBlocked', '--block-page-ips': 'blockPageIps', '--sample-dns': 'sampleDns',
-  '--sample-blocked': 'sampleBlocked', '--dns-repeats': 'dnsRepeats', '--cycle-timeout': 'cycleTimeout',
+  '--sample-blocked': 'sampleBlocked', '--compare': 'compare', '--compare-label': 'compareLabel', '--dns-repeats': 'dnsRepeats', '--cycle-timeout': 'cycleTimeout',
 };
 
 // argv: process.argv.slice(2). Returns a validated options object; throws one Error listing every problem.
@@ -66,17 +66,23 @@ function parseArgs(argv) {
       if (!net.isIP(a)) errors.push(`--block-page-ips: "${a}" is not an IP address.`);
     }
   }
+  if (o.compare !== undefined) {
+    if (!net.isIPv4(o.compare)) errors.push(`--compare="${o.compare}" is not an IPv4 address.`);
+    else if (o.compare === o.ip) errors.push('--compare must be a different resolver from the one under test.');
+  } else if (o.compareLabel !== undefined) errors.push('--compare-label needs --compare.');
   if (o.expectBlocked && !o.blockedUrls) errors.push('--expect-blocked needs --blocked-urls (the pool the categories come from).');
   if (errors.length) { const e = new Error(`Invalid options:\n  - ${errors.join('\n  - ')}`); e.optionErrors = errors; throw e; }
   return o;
 }
 
 // Which child-process environment one cycle gets. Only what the options say is set: no ISP name, no default pools.
-function cycleEnv(o, outDir, baseEnv = process.env) {
+// `who` = { ip, label, reference: bool, seed }. The reference resolver gets the same names (same seed) but no
+// category check: it does not carry the resolver-under-test's blocking policy.
+function cycleEnv(o, outDir, baseEnv = process.env, who = {}) {
   const env = {
     ...baseEnv,
-    RESOLVER_DNS_IP: o.ip,
-    RESOLVER_LABEL: o.label || o.ip,
+    RESOLVER_DNS_IP: who.ip || o.ip,
+    RESOLVER_LABEL: who.label || o.label || o.ip,
     PAGE_LOADS: 'false',
     OUT_DIR: outDir,
   };
@@ -84,10 +90,13 @@ function cycleEnv(o, outDir, baseEnv = process.env) {
   set('DNS_DOMAINS', o.dnsDomains);
   set('SAMPLE_DNS', o.sampleDns);
   set('DNS_REPEATS', o.dnsRepeats);
-  set('BLOCKED_URLS', o.blockedUrls);
-  set('SAMPLE_BLOCKED', o.sampleBlocked);
-  set('EXPECT_BLOCKED_CATEGORIES', o.expectBlocked);
-  set('BLOCK_PAGE_IPS', o.blockPageIps);
+  set('RANDOM_SEED', who.seed);
+  if (!who.reference) {
+    set('BLOCKED_URLS', o.blockedUrls);
+    set('SAMPLE_BLOCKED', o.sampleBlocked);
+    set('EXPECT_BLOCKED_CATEGORIES', o.expectBlocked);
+    set('BLOCK_PAGE_IPS', o.blockPageIps);
+  }
   return env;
 }
 
@@ -127,22 +136,28 @@ function aggregate(cycles) {
 const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 const ms = v => (v === null || v === undefined ? '–' : `${v}`);
 
-// Dependency-free line chart of first-lookup P95 per cycle. Gaps (failed cycles) are skipped, not drawn as zero.
-function chartSvg(points) {
-  const W = 720, H = 220, L = 48, R = 12, T = 12, B = 28;
-  const vals = points.map(p => p.v).filter(v => typeof v === 'number');
+// Dependency-free line chart of first-lookup P95 per cycle, one line per series.
+// Gaps (failed cycles) are skipped, not drawn as zero.
+function chartSvg(series) {
+  const W = 720, H = 240, L = 48, R = 12, T = 12, B = 44;
+  const n = Math.max(...series.map(s => s.points.length));
+  const vals = series.flatMap(s => s.points.map(p => p.v)).filter(v => typeof v === 'number');
   if (!vals.length) return '<p class="muted">Nothing to chart: no successful cycle.</p>';
   const top = Math.max(...vals) * 1.1 || 1;
-  const x = i => L + (points.length === 1 ? (W - L - R) / 2 : (i * (W - L - R)) / (points.length - 1));
+  const x = i => L + (n === 1 ? (W - L - R) / 2 : (i * (W - L - R)) / (n - 1));
   const y = v => T + (H - T - B) * (1 - v / top);
-  const pts = points.map((p, i) => (typeof p.v === 'number' ? [x(i), y(p.v), p] : null)).filter(Boolean);
-  const line = pts.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join(' ');
   const ticks = [0, 0.5, 1].map(f => {
     const v = Math.round(top * f);
     return `<line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" class="grid"/><text x="${L - 6}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end">${v}</text>`;
   }).join('');
-  const dots = pts.map(([px, py, p]) => `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="3"><title>${esc(p.label)}: ${p.v} ms</title></circle>`).join('');
-  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="First-lookup P95 per cycle in milliseconds">${ticks}<polyline points="${line}" class="line"/>${dots}<text x="${L}" y="${H - 6}">cycle 1</text><text x="${W - R}" y="${H - 6}" text-anchor="end">cycle ${points.length}</text></svg>`;
+  const lines = series.map((s, k) => {
+    const pts = s.points.map((p, i) => (typeof p.v === 'number' ? [x(i), y(p.v), p] : null)).filter(Boolean);
+    const line = pts.map(([px, py]) => `${px.toFixed(1)},${py.toFixed(1)}`).join(' ');
+    const dots = pts.map(([px, py, p]) => `<circle cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="3" class="s${k}"><title>${esc(s.name)}, ${esc(p.label)}: ${p.v} ms</title></circle>`).join('');
+    return `<polyline points="${line}" class="line s${k}"/>${dots}`;
+  }).join('');
+  const legend = series.map((s, k) => `<text x="${L + k * 200}" y="${H - 6}" class="lg${k}">● ${esc(s.name)}</text>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="First-lookup P95 per cycle in milliseconds">${ticks}${lines}<text x="${L}" y="${H - 22}">cycle 1</text><text x="${W - R}" y="${H - 22}" text-anchor="end">cycle ${n}</text>${legend}</svg>`;
 }
 
 // run: { ip, label, startedAt, finishedAt, options, rounds: [{n, startedAt, finishedAt, cycles: [...]}], interrupted }
@@ -151,15 +166,29 @@ function renderHtml(run) {
   const total = aggregate(all);
   const rows = (fn, items) => items.map(fn).join('');
   const range = s => `${ms(s.min)} / ${ms(s.median)} / ${ms(s.max)}`;
-  const points = all.map(c => ({ v: c.summary?.dnsChecks?.first?.p95 ?? null, label: `round ${c.round}, cycle ${c.cycle}` }));
+  const cmp = !!run.compare;
+  const refCycles = cmp ? all.map(c => ({ round: c.round, cycle: c.cycle, summary: c.ref?.summary || null })) : [];
+  const refTotal = cmp ? aggregate(refCycles) : null;
+  const firstP95 = c => c?.summary?.dnsChecks?.first?.p95 ?? null;
+  const series = [{ name: run.label, points: all.map(c => ({ v: firstP95(c), label: `round ${c.round}, cycle ${c.cycle}` })) }];
+  if (cmp) series.push({ name: `${run.compare.label} (reference)`, points: refCycles.map(c => ({ v: firstP95(c), label: `round ${c.round}, cycle ${c.cycle}` })) });
+  // Difference per cycle: positive = the resolver under test is slower than the reference.
+  const deltas = cmp ? all.map((c, i) => (firstP95(c) !== null && firstP95(refCycles[i]) !== null ? Math.round((firstP95(c) - firstP95(refCycles[i])) * 100) / 100 : null)).filter(v => v !== null) : [];
+  const medianDelta = deltas.length ? lib.percentile(deltas, 0.5) : null;
+  const slower = deltas.filter(d => d > 0).length;
+  const refCells = c => {
+    const rd = c.ref?.summary?.dnsChecks;
+    const d = firstP95(c) !== null && rd?.first?.p95 != null ? Math.round((firstP95(c) - rd.first.p95) * 100) / 100 : null;
+    return `<td>${ms(rd?.first?.p95)}</td><td class="${rd?.failed ? 'bad' : ''}">${rd ? rd.failed : esc(c.ref?.error || '–')}</td><td class="${d > 0 ? 'bad' : ''}">${d === null ? '–' : (d > 0 ? '+' : '') + d}</td>`;
+  };
   const failedDomains = Object.entries(total.failedDomains).sort((a, b) => b[1] - a[1]);
 
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DNS resolver test ${esc(run.label)}</title>
 <style>
-:root{--bg:#fff;--fg:#1a1d21;--muted:#5b6470;--line:#d9dde3;--accent:#1f6feb;--bad:#b42318;--ok:#067647;--card:#f6f8fa}
-@media (prefers-color-scheme:dark){:root{--bg:#14171a;--fg:#e6e9ec;--muted:#9aa4af;--line:#2d333b;--accent:#58a6ff;--bad:#ff7b72;--ok:#56d364;--card:#1c2128}}
+:root{--bg:#fff;--fg:#1a1d21;--muted:#5b6470;--line:#d9dde3;--accent:#1f6feb;--bad:#b42318;--ok:#067647;--card:#f6f8fa;--warn:#b54708}
+@media (prefers-color-scheme:dark){:root{--bg:#14171a;--fg:#e6e9ec;--muted:#9aa4af;--line:#2d333b;--accent:#58a6ff;--bad:#ff7b72;--ok:#56d364;--card:#1c2128;--warn:#f0a53b}}
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
 main{max-width:960px;margin:0 auto;padding:24px 16px}
 h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px}
@@ -172,7 +201,7 @@ table{border-collapse:collapse;width:100%;font-size:14px}
 th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:right;white-space:nowrap}
 th:first-child,td:first-child,td.l,th.l{text-align:left}
 svg{width:100%;height:auto;color:var(--muted)}svg text{fill:currentColor;font-size:11px}
-.grid{stroke:var(--line)}.line{fill:none;stroke:var(--accent);stroke-width:2}svg circle{fill:var(--accent)}
+.grid{stroke:var(--line)}.line{fill:none;stroke-width:2}.line.s0{stroke:var(--accent)}.line.s1{stroke:var(--warn);stroke-dasharray:5 3}circle.s0{fill:var(--accent)}circle.s1{fill:var(--warn)}svg text.lg0{fill:var(--accent)}svg text.lg1{fill:var(--warn)}
 </style></head><body><main>
 <h1>DNS resolver test: ${esc(run.label)}</h1>
 <p class="muted">Resolver ${esc(run.ip)} · ${esc(run.startedAt)} to ${esc(run.finishedAt)}${run.interrupted ? ' · <b class="bad">stopped early</b>' : ''}</p>
@@ -183,23 +212,28 @@ svg{width:100%;height:auto;color:var(--muted)}svg text{fill:currentColor;font-si
 <div class="card">Failed lookups<b class="${total.failed ? 'bad' : 'ok'}">${total.failed} (${(total.failureRate * 100).toFixed(1)}%)</b></div>
 <div class="card">First lookup P95, median of cycles<b>${ms(total.firstP95.median)} ms</b></div>
 <div class="card">Repeat lookup P95, median of cycles<b>${ms(total.repeatP95.median)} ms</b></div>
+${cmp ? `<div class="card">Reference (${esc(run.compare.label)}) first P95, median<b>${ms(refTotal.firstP95.median)} ms</b></div>
+<div class="card">Difference in first P95, median (positive = slower than reference)<b class="${medianDelta > 0 ? 'bad' : 'ok'}">${medianDelta === null ? '–' : (medianDelta > 0 ? '+' : '') + medianDelta} ms</b></div>
+<div class="card">Cycles slower than reference<b>${slower} of ${deltas.length}</b></div>
+<div class="card">Reference failed lookups<b class="${refTotal.failed ? 'bad' : 'ok'}">${refTotal.failed} (${(refTotal.failureRate * 100).toFixed(1)}%)</b></div>` : ''}
 </div>
+${cmp ? `<p class="muted">Comparison: each cycle asks ${esc(run.ip)} and then ${esc(run.compare.ip)} (${esc(run.compare.label)}) for the same names. A reference answer is a cache hit or miss on that resolver's own side, so it shows what a typical public resolver does, not a fixed baseline.</p>` : ''}
 
 <h2>How to read this</h2>
 <p class="muted">A <b>first</b> lookup is the first time a cycle asks for a name. It shows the resolver's own answering time, and is slow when the name is not cached. A <b>repeat</b> lookup asks the same name again straight after, so it shows the cache. P95 means 95 out of 100 lookups were at least this fast. Ranges below are min / median / max across cycles, in milliseconds.</p>
 
 <h2>First-lookup P95 per cycle (ms)</h2>
-${chartSvg(points)}
+${chartSvg(series)}
 
 <h2>Per round</h2>
-<div class="scroll"><table><thead><tr><th>Round</th><th>Cycles</th><th>Lookups</th><th>Failed</th><th>First P50 (min / med / max)</th><th>First P95 (min / med / max)</th><th>Repeat P95 (min / med / max)</th></tr></thead><tbody>
-${rows(r => { const a = aggregate(r.cycles); return `<tr><td>${r.n}</td><td>${a.cycles}</td><td>${a.lookups}</td><td class="${a.failed ? 'bad' : ''}">${a.failed}</td><td>${range(a.firstP50)}</td><td>${range(a.firstP95)}</td><td>${range(a.repeatP95)}</td></tr>`; }, run.rounds)}
-<tr><td><b>All</b></td><td>${total.cycles}</td><td>${total.lookups}</td><td class="${total.failed ? 'bad' : ''}">${total.failed}</td><td>${range(total.firstP50)}</td><td>${range(total.firstP95)}</td><td>${range(total.repeatP95)}</td></tr>
+<div class="scroll"><table><thead><tr><th>Round</th><th>Cycles</th><th>Lookups</th><th>Failed</th><th>First P50 (min / med / max)</th><th>First P95 (min / med / max)</th><th>Repeat P95 (min / med / max)</th>${cmp ? '<th>Reference first P95 (min / med / max)</th>' : ''}</tr></thead><tbody>
+${rows(r => { const a = aggregate(r.cycles); const ra = cmp ? aggregate(r.cycles.map(c => ({ summary: c.ref?.summary || null }))) : null; return `<tr><td>${r.n}</td><td>${a.cycles}</td><td>${a.lookups}</td><td class="${a.failed ? 'bad' : ''}">${a.failed}</td><td>${range(a.firstP50)}</td><td>${range(a.firstP95)}</td><td>${range(a.repeatP95)}</td>${cmp ? `<td>${range(ra.firstP95)}</td>` : ''}</tr>`; }, run.rounds)}
+<tr><td><b>All</b></td><td>${total.cycles}</td><td>${total.lookups}</td><td class="${total.failed ? 'bad' : ''}">${total.failed}</td><td>${range(total.firstP50)}</td><td>${range(total.firstP95)}</td><td>${range(total.repeatP95)}</td>${cmp ? `<td>${range(refTotal.firstP95)}</td>` : ''}</tr>
 </tbody></table></div>
 
 <h2>Per cycle</h2>
-<div class="scroll"><table><thead><tr><th>Round</th><th>Cycle</th><th>Started</th><th>Seed</th><th>Lookups</th><th>Failed</th><th>First P50</th><th>First P95</th><th>Repeat P95</th><th>Result</th></tr></thead><tbody>
-${rows(c => { const d = c.summary?.dnsChecks; return `<tr><td>${c.round}</td><td>${c.cycle}</td><td class="l">${esc(c.startedAt)}</td><td>${esc(c.summary?.config?.randomSeed ?? '–')}</td><td>${d ? d.total : '–'}</td><td class="${d?.failed ? 'bad' : ''}">${d ? d.failed : '–'}</td><td>${ms(d?.first?.p50)}</td><td>${ms(d?.first?.p95)}</td><td>${ms(d?.repeat?.p95)}</td><td class="l ${d ? 'ok' : 'bad'}">${d ? 'ok' : esc(c.error || 'no result')}</td></tr>`; }, all)}
+<div class="scroll"><table><thead><tr><th>Round</th><th>Cycle</th><th>Started</th><th>Seed</th><th>Lookups</th><th>Failed</th><th>First P50</th><th>First P95</th><th>Repeat P95</th><th>Result</th>${cmp ? '<th>Ref first P95</th><th>Ref failed</th><th>Difference</th>' : ''}</tr></thead><tbody>
+${rows(c => { const d = c.summary?.dnsChecks; return `<tr><td>${c.round}</td><td>${c.cycle}</td><td class="l">${esc(c.startedAt)}</td><td>${esc(c.summary?.config?.randomSeed ?? '–')}</td><td>${d ? d.total : '–'}</td><td class="${d?.failed ? 'bad' : ''}">${d ? d.failed : '–'}</td><td>${ms(d?.first?.p50)}</td><td>${ms(d?.first?.p95)}</td><td>${ms(d?.repeat?.p95)}</td><td class="l ${d ? 'ok' : 'bad'}">${d ? 'ok' : esc(c.error || 'no result')}</td>${cmp ? refCells(c) : ''}</tr>`; }, all)}
 </tbody></table></div>
 
 ${failedDomains.length ? `<h2>Names that failed</h2><div class="scroll"><table><thead><tr><th class="l">Name (error)</th><th>Cycles affected</th></tr></thead><tbody>${rows(([d, n]) => `<tr><td class="l">${esc(d)}</td><td>${n}</td></tr>`, failedDomains)}</tbody></table></div>` : '<h2>Names that failed</h2><p class="muted">None.</p>'}
@@ -211,7 +245,7 @@ ${total.categoryChecks ? `<h2>Category check</h2><p>${total.categoryChecks.total
 <div class="scroll"><table><tbody>
 ${rows(([k, v]) => `<tr><td class="l">${esc(k)}</td><td class="l">${esc(v)}</td></tr>`, Object.entries(run.options))}
 </tbody></table></div>
-<p class="muted">Lookups ask ${esc(run.ip)} directly, so the test machine's own resolver and cache are not involved. The resolver only answers networks it has approved, so a run from an unapproved network shows every lookup as failed. No page loads were run.</p>
+<p class="muted">Lookups ask ${esc(run.ip)} directly, so the test machine's own resolver and cache are not involved. The resolver only answers networks it has approved, so a run from an unapproved network shows every lookup as failed. No page loads were run.${cmp ? ' The reference resolver is not checked for blocked categories.' : ''}</p>
 </main></body></html>
 `;
 }

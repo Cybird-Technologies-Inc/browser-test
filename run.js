@@ -5,6 +5,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const crypto = require('node:crypto');
 const report = require('./report');
 
 const HELP = `Usage: node run.js <resolver-ip> [options]
@@ -17,6 +18,9 @@ then writes report.html (open it in a browser). Run it from a network the resolv
   --gap 5m              pause between rounds                                default 0s
   --interval 60s        time between cycle starts inside a round            default 60s
   --start-at 14:30      wait until this local time (HH:MM) before starting  default: start now
+  --compare IP          also test this public reference resolver with the same names each cycle,
+                        and show both side by side (for example a public resolver you trust)
+  --compare-label NAME  name for the reference in the report                default: its IP
   --label NAME          name shown in the report                            default: the IP
   --dns-domains FILE    names to time (one per line, or a comma list)       default: profiles/pool-dns.txt
   --sample-dns N        use N random names from that list each cycle        default: all
@@ -39,12 +43,12 @@ let child = null;
 process.on('SIGINT', () => { stopping = true; if (child) child.kill('SIGTERM'); console.log('\nStopping after the current step; the report will cover what finished.'); });
 
 // One cycle = one browser-test.js run (DNS only). The child's console output goes to a log file.
-function runCycle(o, dir) {
+function runCycle(o, dir, who) {
   fs.mkdirSync(dir, { recursive: true });
   const log = fs.openSync(path.join(dir, 'run.log'), 'w');
   return new Promise(resolve => {
     child = spawn(process.execPath, [path.join(__dirname, 'browser-test.js')], {
-      env: report.cycleEnv(o, dir), stdio: ['ignore', log, log],
+      env: report.cycleEnv(o, dir, process.env, who), stdio: ['ignore', log, log],
     });
     const timer = setTimeout(() => child.kill('SIGKILL'), o.cycleTimeoutMs);
     const finish = (error) => {
@@ -80,12 +84,13 @@ async function main() {
   }
 
   const run = {
-    ip: o.ip, label: o.label || o.ip, startedAt: stamp(), finishedAt: null, interrupted: false, rounds: [],
+    ip: o.ip, label: o.label || o.ip,
+    compare: o.compare ? { ip: o.compare, label: o.compareLabel || o.compare } : null, startedAt: stamp(), finishedAt: null, interrupted: false, rounds: [],
     // Shown in the report; only what the user set or the tool defaulted, never secrets.
     options: Object.fromEntries(Object.entries({
       duration: o.duration, rounds: o.rounds, gap: o.gap, interval: o.interval, cycleTimeout: o.cycleTimeout,
       dnsDomains: o.dnsDomains, sampleDns: o.sampleDns, dnsRepeats: o.dnsRepeats || '3 (tool default)',
-      blockedUrls: o.blockedUrls, expectBlocked: o.expectBlocked, blockPageIps: o.blockPageIps, sampleBlocked: o.sampleBlocked,
+      compare: o.compare, compareLabel: o.compareLabel, blockedUrls: o.blockedUrls, expectBlocked: o.expectBlocked, blockPageIps: o.blockPageIps, sampleBlocked: o.sampleBlocked,
     }).filter(([, v]) => v !== undefined)),
   };
   const write = () => {
@@ -104,10 +109,18 @@ async function main() {
       const dir = path.join(outDir, `round-${n}`, `cycle-${String(c).padStart(2, '0')}`);
       console.log(`${stamp()} round ${n}/${o.roundsN} cycle ${c}`);
       const startedAt = stamp();
-      const r = await runCycle(o, dir);
-      round.cycles.push({ round: n, cycle: c, startedAt, ...r });
+      // One seed per cycle, shared with the reference, so both resolvers are asked the same names.
+      const seed = crypto.randomInt(0, 2 ** 32);
+      const r = await runCycle(o, dir, { seed });
+      const cycleRec = { round: n, cycle: c, startedAt, seed, ...r };
+      if (o.compare && !stopping) cycleRec.ref = await runCycle(o, path.join(dir, 'reference'), { ip: o.compare, label: run.compare.label, reference: true, seed });
+      round.cycles.push(cycleRec);
       const d = r.summary?.dnsChecks;
-      console.log(d ? `  ${d.failed}/${d.total} failed, first P95 ${d.first.p95 ?? '-'} ms, repeat P95 ${d.repeat?.p95 ?? '-'} ms` : `  FAILED: ${r.error}`);
+      console.log(d ? `  ${run.label}: ${d.failed}/${d.total} failed, first P95 ${d.first.p95 ?? '-'} ms, repeat P95 ${d.repeat?.p95 ?? '-'} ms` : `  ${run.label}: FAILED: ${r.error}`);
+      if (cycleRec.ref) {
+        const rd = cycleRec.ref.summary?.dnsChecks;
+        console.log(rd ? `  ${run.compare.label}: ${rd.failed}/${rd.total} failed, first P95 ${rd.first.p95 ?? '-'} ms, repeat P95 ${rd.repeat?.p95 ?? '-'} ms` : `  ${run.compare.label}: FAILED: ${cycleRec.ref.error}`);
+      }
       write(); // a crash or Ctrl+C never loses finished cycles
       // Next cycle only if it can still start inside this round.
       const nextStart = cycleStart + o.intervalMs;

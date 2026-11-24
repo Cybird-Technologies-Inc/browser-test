@@ -102,3 +102,41 @@ test('renderHtml shows rounds, cycles, failed names and the category table', () 
   const html = r.renderHtml({ ip: '1.2.3.4', label: 'L', startedAt: 's', finishedAt: 'f', interrupted: false, options: { expectBlocked: 'malware' }, rounds: [{ n: 1, cycles: [c, cyc(1, 2, 140, 4)] }] });
   for (const t of ['bad.example (ENOTFOUND)', 'Category check', 'malware', '<polyline', 'Per round', 'Per cycle']) assert.ok(html.includes(t), t);
 });
+
+test('parseArgs: --compare must be a different IPv4; --compare-label needs --compare', () => {
+  const o = r.parseArgs(['1.2.3.4', '--compare', '8.8.8.8', '--compare-label', 'pub']);
+  assert.deepStrictEqual([o.compare, o.compareLabel], ['8.8.8.8', 'pub']);
+  assert.throws(() => r.parseArgs(['1.2.3.4', '--compare', 'dns.google']), /not an IPv4/);
+  assert.throws(() => r.parseArgs(['1.2.3.4', '--compare', '1.2.3.4']), /different resolver/);
+  assert.throws(() => r.parseArgs(['1.2.3.4', '--compare-label', 'x']), /needs --compare/);
+});
+
+test('cycleEnv: reference gets the same seed and names, its own IP, and no category policy', () => {
+  const o = r.parseArgs(['1.2.3.4', '--blocked-urls', 'p.txt', '--expect-blocked', 'malware', '--block-page-ips', '10.0.0.1', '--sample-dns', '5']);
+  const t = r.cycleEnv(o, '/x', { PATH: 'p' }, { seed: 42 });
+  const f = r.cycleEnv(o, '/x/ref', { PATH: 'p' }, { ip: '8.8.8.8', label: 'pub', reference: true, seed: 42 });
+  assert.deepStrictEqual([t.RANDOM_SEED, f.RANDOM_SEED], ['42', '42']);
+  assert.deepStrictEqual([t.RESOLVER_DNS_IP, f.RESOLVER_DNS_IP, f.RESOLVER_LABEL], ['1.2.3.4', '8.8.8.8', 'pub']);
+  assert.strictEqual(t.SAMPLE_DNS, f.SAMPLE_DNS);
+  assert.strictEqual(t.EXPECT_BLOCKED_CATEGORIES, 'malware');
+  for (const k of ['BLOCKED_URLS', 'EXPECT_BLOCKED_CATEGORIES', 'BLOCK_PAGE_IPS', 'SAMPLE_BLOCKED']) assert.ok(!(k in f), k);
+});
+
+test('same RANDOM_SEED gives target and reference the same DNS names', () => {
+  const names = Array.from({ length: 30 }, (_, i) => `n${i}.example.com`).join(',');
+  const pick = seed => lib.loadConfig({ DNS_DOMAINS: names, SAMPLE_DNS: '8', RANDOM_SEED: String(seed), PAGE_LOADS: 'false' }, fs).dnsDomains;
+  assert.deepStrictEqual(pick(99), pick(99));
+});
+
+test('renderHtml with a reference shows both lines, the difference and survives a failed reference cycle', () => {
+  const a = cyc(1, 1, 200, 3); a.ref = cyc(1, 1, 50, 20);
+  const b = cyc(1, 2, 100, 3); b.ref = { summary: null, error: 'killed' };
+  const html = r.renderHtml({ ip: '1.2.3.4', label: 'T', compare: { ip: '8.8.8.8', label: 'Pub' }, startedAt: 's', finishedAt: 'f', interrupted: false, options: {}, rounds: [{ n: 1, cycles: [a, b] }] });
+  for (const t of ['Pub (reference)', 'class="line s1"', '+150', 'Cycles slower than reference', 'Reference first P95']) assert.ok(html.includes(t), t);
+  assert.ok(!html.includes('NaN'));
+});
+
+test('renderHtml without a reference has no comparison parts', () => {
+  const html = r.renderHtml({ ip: '1.2.3.4', label: 'T', compare: null, startedAt: 's', finishedAt: 'f', interrupted: false, options: {}, rounds: [{ n: 1, cycles: [cyc(1, 1, 100, 3)] }] });
+  assert.ok(!html.includes('Reference'));
+});
