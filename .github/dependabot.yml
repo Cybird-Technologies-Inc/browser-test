@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # eslint and @eslint/js must move together (peer range): separate PRs failed CI with ERESOLVE.
+    groups:
+      eslint:
+        patterns: ["eslint", "@eslint/js"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

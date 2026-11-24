@@ -4,12 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`browser-test.js` is a Playwright (Chromium) page-load timer. It measures DNS, TTFB and load time per request. It is used to load-test and monitor a DNS resolver (an ISP resolver) and to compare resolvers. The README has usage, the env-var table and exit codes.
+This repo tests a DNS resolver (an ISP resolver). The main entry point is `run.js`: give it a resolver IP and it writes an HTML report (see Point-and-shoot runner). Underneath, `browser-test.js` is a Playwright (Chromium) page-load and DNS timer, and `dns-load-test.js` is an on-demand load ramp. The README has usage, the option and env-var tables and exit codes.
 
 ## Commands
 
 - Install: `npm ci`, then `npx playwright install chromium` if the browser is missing.
-- Run: `npm start`. Output goes to `page-summary.csv` and `request-details.csv` (gitignored).
+- Run the point-and-shoot test: `node run.js <ip> --duration 10m --rounds 2` (see README). Run the page-load timer: `npm start`. Output goes to `page-summary.csv` and `request-details.csv` (gitignored).
 - All checks: `npm run verify` (syntax check, ESLint, tests). Also run `npm audit --audit-level=high`; CI runs both. Do not call `npm audit` from an npm script: a user-level `allow-scripts` in `~/.npmrc` makes npm 12 reject it.
 - Single test file: `node --test test/<file>.test.js`.
 - Enable the pre-commit hook once per clone: `npm run setup` (secret scan, syntax, lint, tests).
@@ -30,13 +30,14 @@ LeoHat was only the first example resolver. Code, config defaults and docs must 
 
 ## Point-and-shoot runner
 
-- `run.js` (`node run.js <resolver-ip> --duration 10m --rounds 2`) runs DNS-only cycles (`browser-test.js` with `PAGE_LOADS=false`) and writes one `report.html` plus `results.json` under `out/run-<timestamp>/`. Pure logic (option parsing, aggregation, HTML) is in `report.js` and unit-tested.
+- `run.js` (`node run.js <resolver-ip[:port]> --duration 10m --rounds 2 [--compare <ip>]`) runs DNS-only cycles (`browser-test.js` with `PAGE_LOADS=false`) and writes one `report.html` plus `results.json` under `out/run-<timestamp>/`. Pure logic (option parsing, aggregation, HTML) is in `report.js`; `test/run-e2e.test.js` runs `run.js` against fake DNS servers on localhost.
+- Preflight: before any cycle it sends one lookup to each resolver. No answer = red ACTION NEEDED banner, a banner in `report.html` and exit code 3, so the person running it fixes the approval first. `--interval` has a 10 s floor to protect a live resolver.
 - It uses no cloud: no S3, email or alerts. The AWS deployment was removed on the user's request (the AWS resources were deleted; recoverable only from git history).
 - The resolver only answers approved networks, and the user handles approval. A run from an unapproved network shows every lookup as failed.
 
 ## Project context (from the untracked planning files)
 
-- `PLAN_and_open_points.txt` and `PROMPT_browser-test-session.txt` (untracked) hold the plan. PR 1 (script-only config, thresholds, summary.json, blocked check) is implemented on `feat/configurable-scheduled-runs`.
+- `PLAN_and_open_points.txt` and `PROMPT_browser-test-session.txt` (untracked) hold the plan. Work lives on the single branch `feat/browser-test-monitor`; main still holds the original upload and is not to be changed until the user says so.
 - Do not touch the untracked zip/CSV files in this directory (they belong to the user). Do not push or open a PR without being told. Ask before adding a dependency or deleting a file.
 - Do not run heavy profiles against a live ISP resolver without the user's agreement.
 - Commit messages end with `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.
