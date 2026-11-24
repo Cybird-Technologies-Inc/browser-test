@@ -134,11 +134,21 @@ test('renderHtml with a reference shows both lines, the difference and survives 
   const html = r.renderHtml({ ip: '1.2.3.4', label: 'T', compare: { ip: '8.8.8.8', label: 'Pub' }, startedAt: 's', finishedAt: 'f', interrupted: false, options: {}, rounds: [{ n: 1, cycles: [a, b] }] });
   for (const t of ['Pub (reference)', 'class="line s1"', '+150', 'Cycles slower than reference', 'Reference first P95']) assert.ok(html.includes(t), t);
   assert.ok(!html.includes('NaN'));
+  // Comparison summary: sentence, both columns, and wording that does not give a verdict.
+  for (const t of ['Resolver comparison', '150 ms higher (slower) for T', 'Pub (reference)</th>', 'Names that failed (cycles affected)', 'Repeat the run at another time']) assert.ok(html.includes(t), t);
+});
+
+test('renderHtml with a reference where no cycle has both readings does not invent a difference', () => {
+  const a = cyc(1, 1, 200, 3); a.ref = { summary: null, error: 'killed' };
+  const html = r.renderHtml({ ip: '1.2.3.4', label: 'T', compare: { ip: '8.8.8.8', label: 'Pub' }, startedAt: 's', finishedAt: 'f', interrupted: false, options: {}, rounds: [{ n: 1, cycles: [a] }] });
+  assert.ok(html.includes('no cycles with a reading from both resolvers'));
+  assert.ok(!html.includes('NaN'));
 });
 
 test('renderHtml without a reference has no comparison parts', () => {
   const html = r.renderHtml({ ip: '1.2.3.4', label: 'T', compare: null, startedAt: 's', finishedAt: 'f', interrupted: false, options: {}, rounds: [{ n: 1, cycles: [cyc(1, 1, 100, 3)] }] });
   assert.ok(!html.includes('Reference'));
+  assert.ok(!html.includes('Resolver comparison'));
 });
 
 test('parseHostPort and ip:port for the resolver and the reference', () => {

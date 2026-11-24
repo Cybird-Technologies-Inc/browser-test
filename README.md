@@ -80,6 +80,7 @@ difference figures. Use this to point and run at any single resolver, including 
 
 Each cycle asks your resolver, then the reference, for the same names. The report adds:
 
+- a **Resolver comparison** section at the top: one summary sentence and a side-by-side table (failed lookups, first and repeat P95, cycle 1 against later cycles, failed names). It states facts only, with no good or bad verdict;
 - the reference's first-lookup P95 (median across cycles) and its failures;
 - the difference in first P95 (positive = your resolver is slower) and "cycles slower than reference: X of Y";
 - reference columns in the per-round and per-cycle tables, and a second dashed line on the chart.

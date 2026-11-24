@@ -233,6 +233,12 @@ function renderFull(run) {
   const deltas = cmp ? all.map((c, i) => (firstP95(c) !== null && firstP95(refCycles[i]) !== null ? Math.round((firstP95(c) - firstP95(refCycles[i])) * 100) / 100 : null)).filter(v => v !== null) : [];
   const medianDelta = deltas.length ? lib.percentile(deltas, 0.5) : null;
   const slower = deltas.filter(d => d > 0).length;
+  // Cycle 1 is the closest to a cold cache; later cycles ask the same names, so the resolver may already hold them.
+  const medianOf = list => { const v = list.map(firstP95).filter(x => x !== null); return v.length ? lib.percentile(v, 0.5) : null; };
+  const cold = { a: firstP95(all[0]), b: cmp ? firstP95(refCycles[0]) : null };
+  const warm = { a: medianOf(all.slice(1)), b: cmp ? medianOf(refCycles.slice(1)) : null };
+  // Say plainly what this run did not test, so nobody reads a DNS-speed report as a blocking result.
+  const notChecked = total.categoryChecks ? '' : '<p class="muted"><b>Not checked in this run:</b> blocking of malware, phishing and other categories (add <code>--blocked-urls</code> and <code>--expect-blocked</code>), and page loads.</p>\n';
   const refCells = c => {
     const rd = c.ref?.summary?.dnsChecks;
     const d = firstP95(c) !== null && rd?.first?.p95 != null ? Math.round((firstP95(c) - rd.first.p95) * 100) / 100 : null;
@@ -263,7 +269,7 @@ svg{width:100%;min-width:560px;height:auto;color:var(--muted)}svg text{fill:curr
 <h1>DNS resolver test: ${esc(run.label)}</h1>
 ${preflightBanner}<p class="muted">Resolver ${esc(run.ip)} · ${esc(run.startedAt)} to ${esc(run.finishedAt)} (UTC)${run.interrupted ? ' · <b class="bad">stopped early</b>' : ''}</p>
 
-<!--detail--><div class="cards">
+<!--detail-->${cmp ? comparisonSection(run, total, refTotal, medianDelta, slower, deltas.length, cold, warm) : ''}${notChecked}<div class="cards">
 <div class="card">Cycles<b>${total.cycles}${total.cyclesFailed ? ` <span class="bad">(${total.cyclesFailed} failed)</span>` : ''}</b></div>
 <div class="card">Lookups<b>${total.lookups}</b></div>
 <div class="card">Failed lookups<b class="${total.failed ? 'bad' : 'ok'}">${total.failed} (${(total.failureRate * 100).toFixed(1)}%)</b></div>
@@ -307,6 +313,35 @@ ${rows(([k, v]) => `<tr><td class="l">${esc(k)}</td><td class="l">${esc(v)}</td>
 <p class="muted">Lookups ask ${esc(run.ip)} directly, so the test machine's own resolver and cache are not involved. The resolver only answers networks it has approved, so a run from an unapproved network shows every lookup as failed. No page loads were run.${cmp ? ' The reference resolver is not checked for blocked categories.' : ''}</p>
 </main></body></html>
 `;
+}
+
+// Side-by-side summary of the resolver under test and the reference. Facts only: no verdict word, because
+// one window from one network is not enough to call a resolver good or bad.
+function comparisonSection(run, a, b, medianDelta, slower, compared, cold, warm) {
+  const range = x => `${ms(x.min)} / ${ms(x.median)} / ${ms(x.max)}`;
+  const fmt = v => (v === null || v === undefined ? '–' : `${v}`);
+  const pct = x => `${(x.failureRate * 100).toFixed(2)}%`;
+  const names = x => { const e = Object.entries(x.failedDomains); return e.length ? e.map(([d, n]) => `${esc(d)} (${n})`).join(', ') : 'none'; };
+  const row = (label, va, vb) => `<tr><td class="l">${label}</td><td>${va}</td><td>${vb}</td></tr>`;
+  let sentence = 'There were no cycles with a reading from both resolvers, so no difference can be shown.';
+  if (medianDelta !== null) {
+    const dir = medianDelta > 0 ? 'higher (slower)' : medianDelta < 0 ? 'lower (faster)' : 'the same';
+    sentence = `On first lookups the median P95 of ${esc(run.label)} is ${fmt(a.firstP95.median)} ms and of ${esc(run.compare.label)} is ${fmt(b.firstP95.median)} ms: ${medianDelta === 0 ? dir : `${Math.abs(medianDelta)} ms ${dir}`} for ${esc(run.label)}. ${esc(run.label)} was slower in ${slower} of ${compared} cycles. Failed lookups: ${a.failed} of ${a.lookups} (${pct(a)}) against ${b.failed} of ${b.lookups} (${pct(b)}).`;
+  }
+  return `<h2>Resolver comparison</h2>
+<p>${sentence}</p>
+<div class="scroll"><table><thead><tr><th class="l">Measure</th><th>${esc(run.label)}</th><th>${esc(run.compare.label)} (reference)</th></tr></thead><tbody>
+${row('Cycles with a result', a.cycles - a.cyclesFailed, b.cycles - b.cyclesFailed)}
+${row('Lookups', a.lookups, b.lookups)}
+${row('Failed lookups', `<span class="${a.failed ? 'bad' : ''}">${a.failed} (${pct(a)})</span>`, `<span class="${b.failed ? 'bad' : ''}">${b.failed} (${pct(b)})</span>`)}
+${row('First lookup P95, cycle 1 (closest to a cold cache, ms)', fmt(cold.a), fmt(cold.b))}
+${row('First lookup P95, later cycles, median (cache may be warm, ms)', fmt(warm.a), fmt(warm.b))}
+${row('First lookup P50 (min / med / max, ms)', range(a.firstP50), range(b.firstP50))}
+${row('First lookup P95 (min / med / max, ms)', range(a.firstP95), range(b.firstP95))}
+${row('Repeat lookup P95 (min / med / max, ms)', range(a.repeatP95), range(b.repeatP95))}
+${row('Names that failed (cycles affected)', names(a), names(b))}
+</tbody></table></div>
+<p class="muted">Based on this window from this network only. Repeat the run at another time before drawing a conclusion.</p>`;
 }
 
 function categoryTotals(cycles) {
