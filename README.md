@@ -1,7 +1,119 @@
 # browser-test
 
-Playwright (Chromium) page-load timer. It measures DNS, TTFB and load time per
-request, so a DNS resolver can be load-tested and monitored.
+Tests how fast and how reliably a DNS resolver answers. Give it a resolver IP and a
+time to run; it writes one web page with the results. It can also time page loads
+with Playwright (Chromium) and run a DNS load ramp. Nothing is uploaded or emailed.
+
+## Quick start: point and shoot
+
+```bash
+npm ci                                   # once
+node run.js <resolver-ip> --duration 10m --rounds 2
+# then open out/run-<timestamp>/report.html in a browser
+```
+
+Run it from a network the resolver approves. The resolver answers only approved networks,
+so from any other network every lookup shows as failed. No browser download is needed for this mode (`npm ci` is enough).
+
+### What it does
+
+- A **cycle** asks the resolver for a list of names directly (the machine's own DNS and cache are not used). The first time a cycle asks for a name is the **first lookup**; the next asks are **repeat lookups**, which hit the resolver's cache.
+- A **round** repeats cycles for `--duration`. A new cycle starts every `--interval`. The cycle in progress always finishes.
+- The run does `--rounds` rounds, with `--gap` between them.
+- Only the IP you give is tested. A second resolver is tested only if you add `--compare`.
+
+### Examples
+
+| Goal | Command |
+|------|---------|
+| One resolver, one 10-minute round | `node run.js 203.0.113.10` |
+| Test a public resolver on its own | `node run.js 8.8.8.8` (it is just an IP; no comparison happens) |
+| 2 rounds of 10 minutes, 5 minutes apart | `node run.js 203.0.113.10 --duration 10m --rounds 2 --gap 5m` |
+| Start at a set time (this machine's local time) | `node run.js 203.0.113.10 --start-at 14:30` |
+| Compare with a public resolver | `node run.js 203.0.113.10 --compare 8.8.8.8 --compare-label public-ref` |
+| Add the blocked-category check | `node run.js 203.0.113.10 --blocked-urls profiles/pool-blocked.txt --expect-blocked malware,phishing` |
+| Random 8 names per cycle, named report | `node run.js 203.0.113.10 --sample-dns 8 --label my-isp` |
+
+### Options
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `<resolver-ip>` | required | IPv4 address of the resolver to test |
+| `--duration` | `10m` | Length of each round. Units `s`, `m`, `h` (a unit is required) |
+| `--rounds` | `1` | Number of rounds (1 to 100) |
+| `--gap` | `0s` | Pause between rounds |
+| `--interval` | `60s` | Time between cycle starts inside a round. Keeps load on the resolver gentle |
+| `--start-at HH:MM` | start now | Wait for this local time; if it has passed today, tomorrow |
+| `--label` | the IP | Name shown in the report |
+| `--compare IP` | none | Also test this reference resolver each cycle, with the same names (same seed), and show both side by side. Must differ from the resolver under test |
+| `--compare-label` | its IP | Name of the reference in the report |
+| `--dns-domains` | `profiles/pool-dns.txt` | Names to time: a file (one per line, `#` comments) or a comma list |
+| `--sample-dns N` | all | Use N random names from the list each cycle |
+| `--dns-repeats N` | `3` | Lookups per name per cycle: 1 first, then N-1 repeats |
+| `--blocked-urls FILE` | no check | Category list (`category domain` per line) for the blocked-name check |
+| `--expect-blocked LIST` | all | Categories the resolver should block, such as `malware,phishing`. The other categories must resolve normally. Needs `--blocked-urls` |
+| `--block-page-ips LIST` | none | The resolver's sinkhole IPs, if it answers blocked names with one |
+| `--sample-blocked N` | all | Names per category per cycle |
+| `--cycle-timeout` | `5m` | Stops one cycle that hangs; it is recorded as failed |
+| `--out DIR` | `out/run-<timestamp>` | Output folder |
+
+`node run.js --help` prints the same list. Ctrl+C stops early and still writes the report.
+
+### Without `--compare`
+
+Only the IP you give is tested. The report has no reference columns, no second chart line and no
+difference figures. Use this to point and run at any single resolver, including a public one such as `8.8.8.8`.
+
+### With `--compare`
+
+Each cycle asks your resolver, then the reference, for the same names. The report adds:
+
+- the reference's first-lookup P95 (median across cycles) and its failures;
+- the difference in first P95 (positive = your resolver is slower) and "cycles slower than reference: X of Y";
+- reference columns in the per-round and per-cycle tables, and a second dashed line on the chart.
+
+The reference is not given the blocked-category check, because it does not carry your resolver's policy.
+A cycle takes about twice as long, because both resolvers are asked. A reference answer comes from that
+resolver's own cache, so it shows what a typical public resolver does, not a fixed baseline.
+
+### Reading the report
+
+| Part | Meaning |
+|------|---------|
+| Cards | Cycles, lookups, failed lookups, median first and repeat P95 (and the reference and difference with `--compare`) |
+| First-lookup P95 chart | One point per cycle. A gap is a failed cycle, not zero |
+| Per round / per cycle | Lookups, failures, first P50 and P95, repeat P95 (ranges are min / median / max across cycles) |
+| Names that failed | Name, error code and how many cycles it failed in |
+| Category check | Only with `--blocked-urls`: how many checks were right per category |
+| Settings used | Every option the run used |
+
+P95 means 95 out of 100 lookups were at least this fast. A big gap between first and repeat P95 means
+cache misses are slow. A failed cycle (a timeout or crash) is listed with its reason, never hidden.
+
+### Output files
+
+| File | Content |
+|------|---------|
+| `report.html` | The report: one self-contained page, no internet needed |
+| `results.json` | All cycles of the run, for your own tools |
+| `round-N/cycle-NN/summary.json` | Full numbers for one cycle (the reference is in `reference/`) |
+| `round-N/cycle-NN/run.log` | Console output of that cycle |
+
+The report and results are rewritten after every cycle, so a crash never loses finished cycles.
+
+### Limits and safety
+
+- Query load is light: a few dozen lookups per cycle, one cycle per `--interval`. Do not lower `--interval` against a live ISP resolver without its owner's agreement.
+- This mode runs no page loads and starts no browser. Page-load timing needs the host's DNS to be the resolver under test (see below).
+- Nothing leaves the machine except the DNS queries to the IPs you name.
+
+---
+
+## Reference: page-load timer and load ramp
+
+The sections below describe the underlying tools: the Playwright page-load timer
+(`npm start`) and the DNS load ramp (`npm run dns-load`). `run.js` uses the timer with
+`PAGE_LOADS=false`.
 
 ## Usage
 
@@ -173,22 +285,6 @@ Ready-made settings in `profiles/`. Load one with `set -a; . profiles/light.env;
 
 The thresholds in the profiles are starting values: tune them after baseline runs.
 Do not run the heavy profiles against a live ISP resolver without agreement. It serves real subscribers.
-
-## Point-and-shoot run
-
-Give the resolver IP; it runs DNS-only checks for the time you set and writes one web page.
-Nothing is uploaded or emailed. Run it from a network the resolver approves.
-
-```bash
-# 2 rounds of 10 minutes, a cycle every minute, starting at 14:30 local time
-node run.js 203.0.113.10 --duration 10m --rounds 2 --start-at 14:30
-# open out/run-<timestamp>/report.html
-```
-
-Add `--compare 8.8.8.8` (any public resolver you choose) to test a reference too. Each cycle asks both resolvers for the same names, and the report shows them side by side with the difference. The reference is not given the category check.
-
-`node run.js --help` lists every option. `results.json` and each cycle's `summary.json` and `run.log` sit next to the report.
-It sets `PAGE_LOADS=false`, so no browser is started. Add `--blocked-urls profiles/pool-blocked.txt --expect-blocked malware,phishing` for the category check.
 
 ## Development setup
 
