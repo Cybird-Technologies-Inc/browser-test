@@ -135,7 +135,7 @@ test('renderHtml with a reference shows both lines, the difference and survives 
   for (const t of ['Pub (reference)', 'class="line s1"', '+150', 'Cycles slower than reference', 'Reference first P95']) assert.ok(html.includes(t), t);
   assert.ok(!html.includes('NaN'));
   // Comparison summary: sentence, both columns, and wording that does not give a verdict.
-  for (const t of ['Resolver comparison', '150 ms higher (slower) for T', 'Pub (reference)</th>', 'Names that failed (cycles affected)', 'Repeat the run at another time']) assert.ok(html.includes(t), t);
+  for (const t of ['Resolver comparison', '150 ms higher (slower) for T', 'Pub (reference)</th>', 'Names that failed (cycles affected)', 'Repeat the run at another time', 'class="wrap"']) assert.ok(html.includes(t), t);
 });
 
 test('comparison: slowest names are listed per resolver, and a gap within 20 ms is called the same', () => {

@@ -270,6 +270,8 @@ h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px}
 table{border-collapse:collapse;width:100%;font-size:14px}
 th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:right;white-space:nowrap}
 th:first-child,td:first-child,td.l,th.l{text-align:left}
+td.wrap{white-space:normal;text-align:left;vertical-align:top;overflow-wrap:anywhere}
+.nm{display:block}
 svg{width:100%;min-width:560px;height:auto;color:var(--muted)}svg text{fill:currentColor;font-size:11px}
 .grid{stroke:var(--line)}.line{fill:none;stroke-width:2}.line.s0{stroke:var(--accent)}.line.s1{stroke:var(--warn);stroke-dasharray:5 3}circle.s0{fill:var(--accent)}circle.s1{fill:var(--warn)}svg text.lg0{fill:var(--accent)}svg text.lg1{fill:var(--warn)}
 </style></head><body><main>
@@ -337,8 +339,8 @@ function comparisonSection(run, a, b, medianDelta, slower, compared, cold, warm)
   const range = x => `${ms(x.min)} / ${ms(x.median)} / ${ms(x.max)}`;
   const fmt = v => (v === null || v === undefined ? '–' : `${v}`);
   const pct = x => `${(x.failureRate * 100).toFixed(2)}%`;
-  const names = x => { const e = Object.entries(x.failedDomains); return e.length ? e.map(([d, n]) => `${esc(d)} (${n})`).join(', ') : 'none'; };
-  const row = (label, va, vb) => `<tr><td class="l">${label}</td><td>${va}</td><td>${vb}</td></tr>`;
+  const names = x => { const e = Object.entries(x.failedDomains); return e.length ? e.map(([d, n]) => `<span class="nm">${esc(d)} (${n})</span>`).join('') : 'none'; };
+  const row = (label, va, vb, cls = '') => `<tr><td class="l">${label}</td><td${cls}>${va}</td><td${cls}>${vb}</td></tr>`;
   let sentence = 'There were no cycles with a reading from both resolvers, so no difference can be shown.';
   if (medianDelta !== null) {
     const same = Math.abs(medianDelta) <= SAME_WITHIN_MS;
@@ -356,7 +358,7 @@ ${row('First lookup P95, later cycles, median (cache may be warm, ms)', fmt(warm
 ${row('First lookup P50 (min / med / max, ms)', range(a.firstP50), range(b.firstP50))}
 ${row('First lookup P95 (min / med / max, ms)', range(a.firstP95), range(b.firstP95))}
 ${row('Repeat lookup P95 (min / med / max, ms)', range(a.repeatP95), range(b.repeatP95))}
-${row('Names that failed (cycles affected)', names(a), names(b))}
+${row('Names that failed (cycles affected)', names(a), names(b), ' class="wrap"')}
 </tbody></table></div>
 ${slowTable(run.label, a)}${slowTable(`${run.compare.label} (reference)`, b)}
 <p class="muted">Based on this window from this network only. Repeat the run at another time before drawing a conclusion.</p>`;
