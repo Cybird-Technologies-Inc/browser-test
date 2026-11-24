@@ -6,7 +6,9 @@ set -euo pipefail
 # Block obvious secrets in staged changes (AWS keys, private keys, password/token assignments).
 # Prints only the file name, never the matched value.
 pattern='AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|(password|passwd|secret|token|api[_-]?key)[[:space:]]*[=:][[:space:]]*["'"'"'][^"'"'"']{8,}'
-if hits=$(git diff --cached --name-only --diff-filter=ACM -z | xargs -0 -r grep -IlEi -- "$pattern" 2>/dev/null); then
+# `|| true`: grep exits 1 on "no match", and xargs -r with no files (only deletions staged) must not look like a hit.
+hits=$(git diff --cached --name-only --diff-filter=ACM -z | xargs -0 -r grep -IlEi -- "$pattern" 2>/dev/null || true)
+if [ -n "$hits" ]; then
   echo "pre-commit: possible secret in staged file(s):" >&2
   echo "$hits" >&2
   echo "Remove it and read it from an environment variable instead." >&2
