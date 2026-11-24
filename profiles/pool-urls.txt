@@ -1,6 +1,6 @@
 # Pool of public sites for URLS, to simulate a mix of real users (one URL per line).
 # Use with SAMPLE_URLS=<n>: each cycle opens n of these, picked at random.
-# Checked with a plain GET: each answered 200 (checked from one network, not from the AWS box).
+# Checked with a plain GET: each answered 200 (checked from one network only).
 # A site may still answer a datacenter client with 403. List such a code in IGNORE_HTTP_STATUS
 # or drop the site.
 https://www.wikipedia.org

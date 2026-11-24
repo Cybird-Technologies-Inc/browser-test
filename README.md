@@ -38,6 +38,7 @@ Every variable is optional. Defaults equal the old hardcoded values.
 | `BLOCKED_URLS` | unset | Domains the resolver should block, as `category=domain` entries (comma list, or a file). See below |
 | `MAX_BLOCK_FAILED` | unset | Fail if more than this many blocked domains were answered. Use `0` whenever `BLOCKED_URLS` is set |
 | `EXPECT_BLOCKED_CATEGORIES` | unset | Categories switched ON in the resolver's panel: `all`, `none` or a comma list. Names in them must be blocked, names in every other category must resolve normally. Unset = all expected blocked |
+| `PAGE_LOADS` | `true` | `false` = DNS-only run: no page is opened and no browser starts (what `run.js` sets) |
 | `SAMPLE_URLS` / `SAMPLE_BLOCKED` / `SAMPLE_DNS` | unset | Random real-user mix: use this many from the `URLS` / `DNS_DOMAINS` pool, or this many per category from the `BLOCKED_URLS` pool. Unset = use all |
 | `RANDOM_SEED` | random | Seed for the mix. It is logged and written to `summary.json`, so a run can be replayed |
 | `THINK_TIME_MAX_MS` | `0` | Each page waits a random 0 to this many ms after the first ones, like a user reading |
@@ -58,8 +59,7 @@ site answered, so DNS worked. The alert email lists the failed URLs and the advi
 **Trend.** If `PREVIOUS_SUMMARY` points to the previous run's `summary.json`, the new
 `summary.json` gets a `trend` block: change in failure rate and P95 DNS, newly failing
 and recovered URLs. It is report only and never changes the exit code. A missing,
-damaged or other-resolver file means no trend. On the AWS box the runner downloads
-`results/resolver=<label>/latest.json` before each run and sets this itself.
+damaged or other-resolver file means no trend.
 
 ### Blocked domains (feed categories)
 
@@ -84,7 +84,7 @@ addresses, an extra IPv6 address in the answer is ignored; list the IPv6 address
 want it judged.
 
 `BLOCKED_LOOKUP` picks how blocked names are looked up. `resolver` (the default whenever
-`RESOLVER_DNS_IP` is set, as the deploy does) asks that resolver directly, so a host cache can
+`RESOLVER_DNS_IP` is set) asks that resolver directly, so a host cache can
 never answer for it. `system` uses the OS resolver like Chromium and can return cached answers.
 The page tests always use the OS resolver.
 
@@ -163,7 +163,7 @@ Run it only when the resolver's owner has agreed, one run at a time.
 ### Example profiles
 
 Ready-made settings in `profiles/`. Load one with `set -a; . profiles/light.env; set +a`
-(or a systemd `EnvironmentFile=`), and set `RESOLVER_LABEL` yourself.
+, and set `RESOLVER_LABEL` yourself.
 
 | File | Load | Use |
 |------|------|-----|
@@ -174,9 +174,19 @@ Ready-made settings in `profiles/`. Load one with `set -a; . profiles/light.env;
 The thresholds in the profiles are starting values: tune them after baseline runs.
 Do not run the heavy profiles against a live ISP resolver without agreement. It serves real subscribers.
 
-## Deploy
+## Point-and-shoot run
 
-A scheduled runner on AWS (EC2 timer, S3 results, SNS alerts, heartbeat alarm) is described in [deploy/README.md](deploy/README.md).
+Give the resolver IP; it runs DNS-only checks for the time you set and writes one web page.
+Nothing is uploaded or emailed. Run it from a network the resolver approves.
+
+```bash
+# 2 rounds of 10 minutes, a cycle every minute, starting at 14:30 local time
+node run.js 203.0.113.10 --duration 10m --rounds 2 --start-at 14:30
+# open out/run-<timestamp>/report.html
+```
+
+`node run.js --help` lists every option. `results.json` and each cycle's `summary.json` and `run.log` sit next to the report.
+It sets `PAGE_LOADS=false`, so no browser is started. Add `--blocked-urls profiles/pool-blocked.txt --expect-blocked malware,phishing` for the category check.
 
 ## Development setup
 

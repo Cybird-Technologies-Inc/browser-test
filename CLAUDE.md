@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Design rule: any ISP, no hardcoded ISP
 
-LeoHat was only the first example resolver. Code, config defaults and docs must stay ISP-neutral: the resolver under test is identified only by `RESOLVER_LABEL` and `RESOLVER_DNS_IP` (deploy), and sinkhole addresses by `BLOCK_PAGE_IPS`. Use placeholders such as `<ISP name>` in docs. Do not add an ISP name as a default anywhere.
+LeoHat was only the first example resolver. Code, config defaults and docs must stay ISP-neutral: the resolver under test is identified only by `RESOLVER_LABEL` and `RESOLVER_DNS_IP`, and sinkhole addresses by `BLOCK_PAGE_IPS`. Use placeholders such as `<ISP name>` in docs. Do not add an ISP name as a default anywhere.
 
 ## Architecture
 
@@ -28,18 +28,15 @@ LeoHat was only the first example resolver. Code, config defaults and docs must 
 - Config is env-var only (table in the README). New CSV columns are appended after the existing ones so downstream readers keep working.
 - Chromium uses the OS resolver, so results reflect whatever resolver the host is configured with. Running from WSL does not test the resolver: its resolver and IP are different, and the resolver only answers approved networks.
 
-## Deploy (`deploy/`)
+## Point-and-shoot runner
 
-- `deploy/aws/{install,update,uninstall}.sh` create and remove the AWS pieces (S3 bucket, SNS alerts, IAM, EC2 + Elastic IP, heartbeat alarm) in `ap-south-1`. All support `DRY_RUN=1`, which makes no `aws` call; tests rely on that.
-- `deploy/instance/` runs on the box: `setup.sh`, systemd units (15-minute timer), `run-all.sh`, `alert.sh`. One runner tests many ISP resolvers in turn: one `/etc/browser-test/targets/<label>.env` per ISP, added with `deploy/aws/add-target.sh <label> <ip>`. The host resolver is switched per target with no fallback; AWS endpoints bypass it so alerts still work. All ISPs approve the same Elastic IP.
-- Real installs need `ALERT_EMAIL` and `RESOLVER_DNS_IP` in the environment (never committed). `deploy/` must be committed first: the release is `git archive HEAD`.
-- Never run a real install, update or uninstall without the user's explicit go-ahead. See `deploy/README.md`.
-- Run on real AWS (ap-south-1): install, update, add-target, the S3 upload under `results/resolver=<label>/` and `latest.json` work. Still unverified: a cycle where the resolver answers (needs the Elastic IP approved), the AppArmor profile with Chromium, `remove-target.sh` over SSM, and the generic alert mode.
+- `run.js` (`node run.js <resolver-ip> --duration 10m --rounds 2`) runs DNS-only cycles (`browser-test.js` with `PAGE_LOADS=false`) and writes one `report.html` plus `results.json` under `out/run-<timestamp>/`. Pure logic (option parsing, aggregation, HTML) is in `report.js` and unit-tested.
+- It uses no cloud: no S3, email or alerts. The AWS deployment was removed on the user's request (the AWS resources were deleted; recoverable only from git history).
+- The resolver only answers approved networks, and the user handles approval. A run from an unapproved network shows every lookup as failed.
 
 ## Project context (from the untracked planning files)
 
 - `PLAN_and_open_points.txt` and `PROMPT_browser-test-session.txt` (untracked) hold the plan. PR 1 (script-only config, thresholds, summary.json, blocked check) is implemented on `feat/configurable-scheduled-runs`.
-- PR 2 (EC2 timer, metrics push) is out of scope here. Its infra belongs in `cybird-dns-shield` tooling, not in this repo.
 - Do not touch the untracked zip/CSV files in this directory (they belong to the user). Do not push or open a PR without being told. Ask before adding a dependency or deleting a file.
 - Do not run heavy profiles against a live ISP resolver without the user's agreement.
 - Commit messages end with `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.

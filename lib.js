@@ -214,7 +214,10 @@ function loadConfig(env, fsLike) {
   const sampleUrls = num('SAMPLE_URLS', null, { min: 1, integer: true });
   const sampleBlocked = num('SAMPLE_BLOCKED', null, { min: 1, integer: true });
   const sampleDns = num('SAMPLE_DNS', null, { min: 1, integer: true });
-  const urls = sampleItems(allUrls, sampleUrls, rng);
+  // PAGE_LOADS=false: DNS-only run. Chromium would use the host's resolver, not RESOLVER_DNS_IP, so
+  // page timings only mean something when the host is already set to the resolver under test.
+  const pageLoads = parseBool(env.PAGE_LOADS, true, 'PAGE_LOADS', errors);
+  const urls = pageLoads ? sampleItems(allUrls, sampleUrls, rng) : [];
   // SAMPLE_BLOCKED = names per CATEGORY, so every category is covered in every cycle.
   const byCat = {};
   for (const e of allBlocked) (byCat[e.category] ||= []).push(e);
@@ -234,7 +237,7 @@ function loadConfig(env, fsLike) {
 
   // How blocked names are looked up. 'resolver' asks RESOLVER_DNS_IP directly, so the answer is the
   // resolver's own and never a host-cache hit. 'system' uses the OS resolver (getaddrinfo).
-  // Default: 'resolver' when RESOLVER_DNS_IP is set (the deploy always sets it), else 'system'.
+  // Default: 'resolver' when RESOLVER_DNS_IP is set, else 'system'.
   const resolverIp = (env.RESOLVER_DNS_IP || '').trim();
   if (resolverIp && !(net.isIPv4(resolverIp))) errors.push('RESOLVER_DNS_IP must be an IPv4 address.');
   const lookupMode = (env.BLOCKED_LOOKUP || (resolverIp ? 'resolver' : 'system')).trim().toLowerCase();

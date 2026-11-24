@@ -10,9 +10,10 @@
   "scripts": {
     "start": "node browser-test.js",
     "dns-load": "node dns-load-test.js",
+    "run": "node run.js",
     "test": "node --test \"test/*.test.js\"",
     "lint": "eslint .",
-    "check": "node --check browser-test.js && node --check dns-load-test.js",
+    "check": "node --check browser-test.js && node --check dns-load-test.js && node --check run.js && node --check report.js",
     "verify": "npm run check && npm run lint && npm test",
     "setup": "git config core.hooksPath .githooks"
   },
