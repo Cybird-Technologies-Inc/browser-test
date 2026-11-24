@@ -170,7 +170,7 @@ function aggregate(cycles) {
     firstP95: stat(pick('first', 'p95')),
     repeatP95: stat(pick('repeat', 'p95')),
     failedDomains,
-    categoryChecks: blocked.length ? {
+    categoryChecks: blocked.some(b => b.total > 0) ? {
       total: blocked.reduce((n, b) => n + b.total, 0),
       wrong: blocked.reduce((n, b) => n + b.blockFailed, 0),
     } : null,
@@ -206,6 +206,12 @@ function chartSvg(series) {
 
 // run: { ip, label, startedAt, finishedAt, options, rounds: [{n, startedAt, finishedAt, cycles: [...]}], interrupted }
 function renderHtml(run) {
+  const html = renderFull(run);
+  // No cycle ran: zero-filled cards and tables would only mislead, so keep the banner and the settings.
+  return run.preflight && run.preflight.ok === false ? html.replace(/<!--detail-->[\s\S]*?<!--\/detail-->/, '') : html;
+}
+
+function renderFull(run) {
   // A failed preflight means no cycle ran: tell the person who ran it exactly what to fix first.
   const pf = run.preflight && run.preflight.ok === false ? run.preflight : null;
   const preflightBanner = pf ? `<div class="alert" role="alert"><h2>Action needed: the test did not start</h2>
@@ -251,13 +257,13 @@ h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px}
 table{border-collapse:collapse;width:100%;font-size:14px}
 th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:right;white-space:nowrap}
 th:first-child,td:first-child,td.l,th.l{text-align:left}
-svg{width:100%;height:auto;color:var(--muted)}svg text{fill:currentColor;font-size:11px}
+svg{width:100%;min-width:560px;height:auto;color:var(--muted)}svg text{fill:currentColor;font-size:11px}
 .grid{stroke:var(--line)}.line{fill:none;stroke-width:2}.line.s0{stroke:var(--accent)}.line.s1{stroke:var(--warn);stroke-dasharray:5 3}circle.s0{fill:var(--accent)}circle.s1{fill:var(--warn)}svg text.lg0{fill:var(--accent)}svg text.lg1{fill:var(--warn)}
 </style></head><body><main>
 <h1>DNS resolver test: ${esc(run.label)}</h1>
 ${preflightBanner}<p class="muted">Resolver ${esc(run.ip)} · ${esc(run.startedAt)} to ${esc(run.finishedAt)} (UTC)${run.interrupted ? ' · <b class="bad">stopped early</b>' : ''}</p>
 
-<div class="cards">
+<!--detail--><div class="cards">
 <div class="card">Cycles<b>${total.cycles}${total.cyclesFailed ? ` <span class="bad">(${total.cyclesFailed} failed)</span>` : ''}</b></div>
 <div class="card">Lookups<b>${total.lookups}</b></div>
 <div class="card">Failed lookups<b class="${total.failed ? 'bad' : 'ok'}">${total.failed} (${(total.failureRate * 100).toFixed(1)}%)</b></div>
@@ -276,7 +282,7 @@ ${slowCycles ? `<p class="alert">${slowCycles} cycle(s) took longer than the ${M
 <p class="muted">A <b>first</b> lookup is the first time a cycle asks for a name. It shows the resolver's own answering time, and is slow when the name is not cached. The same names are asked in every cycle, so after cycle 1 the resolver may already hold them: later first lookups can look faster than a true cold lookup, and cycle 1 is the best cold-start figure. A <b>repeat</b> lookup asks the same name again straight after, so it shows the cache. P95 means 95 out of 100 lookups were at least this fast. Ranges below are min / median / max across cycles, in milliseconds.</p>
 
 <h2>First-lookup P95 per cycle (ms)</h2>
-${chartSvg(series)}
+<div class="scroll">${chartSvg(series)}</div>
 
 <h2>Per round</h2>
 <div class="scroll"><table><thead><tr><th>Round</th><th>Cycles</th><th>Lookups</th><th>Failed</th><th>First P50 (min / med / max)</th><th>First P95 (min / med / max)</th><th>Repeat P95 (min / med / max)</th>${cmp ? '<th>Reference first P95 (min / med / max)</th>' : ''}</tr></thead><tbody>
@@ -294,7 +300,7 @@ ${failedDomains.length ? `<h2>Names that failed</h2><div class="scroll"><table><
 ${total.categoryChecks ? `<h2>Category check</h2><p>${total.categoryChecks.total} checks, <b class="${total.categoryChecks.wrong ? 'bad' : 'ok'}">${total.categoryChecks.wrong} wrong</b>. Expected blocked: ${esc(run.options.expectBlocked || 'all categories')}.</p>
 <div class="scroll"><table><thead><tr><th>Category</th><th>Expected</th><th>Checks</th><th>Correct</th></tr></thead><tbody>${rows(([c, v]) => `<tr><td class="l">${esc(c)}</td><td>${esc(v.expected)}</td><td>${v.total}</td><td class="${v.correct < v.total ? 'bad' : 'ok'}">${v.correct}</td></tr>`, Object.entries(categoryTotals(all)))}</tbody></table></div>` : ''}
 
-<h2>Settings used</h2>
+<!--/detail--><h2>Settings used</h2>
 <div class="scroll"><table><tbody>
 ${rows(([k, v]) => `<tr><td class="l">${esc(k)}</td><td class="l">${esc(v)}</td></tr>`, Object.entries(run.options))}
 </tbody></table></div>

@@ -188,3 +188,12 @@ test('renderHtml: failed preflight shows an alert; slow cycles are called out', 
   assert.ok(html.includes('took longer than the 60 s interval'));
   assert.ok(!r.renderHtml({ ...base, rounds: [] }).includes('Action needed'));
 });
+
+test('failed preflight report has no zero-filled cards or tables; no category section without checks', () => {
+  const base = { ip: '1.2.3.4', label: 'T', compare: null, startedAt: 's', finishedAt: 'f', interrupted: false, options: { a: 'b' }, rounds: [] };
+  const pf = r.renderHtml({ ...base, preflight: { ok: false, resolver: 'T', address: '1.2.3.4:53', code: 'ETIMEOUT', hint: 'no answer.' } });
+  for (const t of ['Failed lookups', 'Per cycle', 'Per round']) assert.ok(!pf.includes(t), t);
+  assert.ok(pf.includes('Settings used') && pf.includes('Action needed'));
+  const c = cyc(1, 1, 100, 3); c.summary.blocked = { total: 0, blockFailed: 0, perCategory: {} };
+  assert.ok(!r.renderHtml({ ...base, rounds: [{ n: 1, cycles: [c] }] }).includes('Category check'));
+});

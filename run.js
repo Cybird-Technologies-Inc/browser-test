@@ -124,7 +124,7 @@ async function main() {
     // Shown in the report; only what the user set or the tool defaulted, never secrets.
     options: Object.fromEntries(Object.entries({
       duration: o.duration, rounds: o.rounds, gap: o.gap, interval: o.interval, cycleTimeout: o.cycleTimeout,
-      dnsDomains: o.dnsDomains, sampleDns: o.sampleDns, dnsRepeats: o.dnsRepeats || '3 (tool default)',
+      dnsDomains: o.dnsDomains === DEFAULT_DNS ? 'profiles/pool-dns.txt (default)' : o.dnsDomains, sampleDns: o.sampleDns, dnsRepeats: o.dnsRepeats || '3 (tool default)',
       compare: o.compareTarget, compareLabel: o.compareLabel, blockedUrls: o.blockedUrls, expectBlocked: o.expectBlocked, blockPageIps: o.blockPageIps, sampleBlocked: o.sampleBlocked,
     }).filter(([, v]) => v !== undefined)),
   };
