@@ -304,7 +304,8 @@ function loadConfig(env, fsLike) {
 // phishing, and a browser must not visit them. A block shows up either as
 // NXDOMAIN or as an answer that is only the resolver's sinkhole address.
 // Any other answer is a real one, so the block failed. A resolver error
-// proves nothing, so it fails the check too (and the detail says why).
+// proves nothing, so it is reported as its own 'no_answer' result (not a leak and not an
+// over-block) but still counts in blockFailed, so MAX_BLOCK_FAILED fails closed.
 function classifyBlocked({ addresses = [], errorCode = null }, { blockPageIps = [] } = {}, expected = 'blocked') {
   const nxdomain = errorCode === 'ENOTFOUND';
   // Judge only the IP families the operator listed: a v6 sinkhole answer must not turn a
@@ -319,13 +320,13 @@ function classifyBlocked({ addresses = [], errorCode = null }, { blockPageIps = 
     // The category is switched off in the panel: a normal answer is the pass. A block or a
     // resolver error means the resolver filters when it should not (or proved nothing).
     if (nxdomain) return { result: 'over_blocked', detail: 'NXDOMAIN (category should be allowed)' };
-    if (errorCode) return { result: 'over_blocked', detail: `resolver error ${errorCode}` };
+    if (errorCode) return { result: 'no_answer', detail: `resolver error ${errorCode}` };
     if (empty) return { result: 'over_blocked', detail: 'empty answer, no addresses (category should be allowed)' };
     if (sinkholed) return { result: 'over_blocked', detail: 'sinkhole (category should be allowed)' };
     return { result: 'allowed_ok', detail: `real answer ${addresses.join(' ')}` };
   }
   if (nxdomain) return { result: 'blocked_ok', detail: 'NXDOMAIN' };
-  if (errorCode) return { result: 'block_failed', detail: `resolver error ${errorCode}` };
+  if (errorCode) return { result: 'no_answer', detail: `resolver error ${errorCode}` };
   if (empty) return { result: 'block_failed', detail: 'empty answer, no addresses' };
   if (sinkholed) return { result: 'blocked_ok', detail: 'sinkhole' };
   return { result: 'block_failed', detail: `real answer ${addresses.join(' ')}` };
@@ -384,9 +385,10 @@ function summarizeBlocked(results) {
     const blockedOk = rs.filter(r => r.result === 'blocked_ok').length;
     const allowedOk = rs.filter(r => r.result === 'allowed_ok').length;
     const overBlocked = rs.filter(r => r.result === 'over_blocked').length;
+    const noAnswer = rs.filter(r => r.result === 'no_answer').length;
     // blockFailed counts every policy miss (not blocked when it should be, or blocked when it
     // should not be), so MAX_BLOCK_FAILED=0 catches both directions.
-    return { total: rs.length, blockedOk, allowedOk, overBlocked, blockFailed: rs.length - blockedOk - allowedOk };
+    return { total: rs.length, blockedOk, allowedOk, overBlocked, noAnswer, blockFailed: rs.length - blockedOk - allowedOk };
   };
   const perCategory = {};
   for (const c of new Set(results.map(r => r.category))) {

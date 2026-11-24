@@ -179,7 +179,9 @@ function aggregate(cycles) {
     slowestNames,
     categoryChecks: blocked.some(b => b.total > 0) ? {
       total: blocked.reduce((n, b) => n + b.total, 0),
-      wrong: blocked.reduce((n, b) => n + b.blockFailed, 0),
+      // Timeouts and resolver errors are shown apart: they prove nothing about the policy.
+      noAnswer: blocked.reduce((n, b) => n + (b.noAnswer || 0), 0),
+      wrong: blocked.reduce((n, b) => n + b.blockFailed - (b.noAnswer || 0), 0),
     } : null,
   };
 }
@@ -312,8 +314,8 @@ ${rows(c => { const d = c.summary?.dnsChecks; return `<tr><td>${c.round}</td><td
 
 ${failedDomains.length ? `<h2>Names that failed</h2><div class="scroll"><table><thead><tr><th class="l">Name (error)</th><th>Cycles affected</th></tr></thead><tbody>${rows(([d, n]) => `<tr><td class="l">${esc(d)}</td><td>${n}</td></tr>`, failedDomains)}</tbody></table></div>` : '<h2>Names that failed</h2><p class="muted">None.</p>'}
 
-${total.categoryChecks ? `<h2>Category check</h2><p>${total.categoryChecks.total} checks, <b class="${total.categoryChecks.wrong ? 'bad' : 'ok'}">${total.categoryChecks.wrong} wrong</b>. Expected blocked: ${esc(run.options.expectBlocked || 'all categories')}.</p>
-<div class="scroll"><table><thead><tr><th>Category</th><th>Expected</th><th>Checks</th><th>Correct</th></tr></thead><tbody>${rows(([c, v]) => `<tr><td class="l">${esc(c)}</td><td>${esc(v.expected)}</td><td>${v.total}</td><td class="${v.correct < v.total ? 'bad' : 'ok'}">${v.correct}</td></tr>`, Object.entries(categoryTotals(all)))}</tbody></table></div>` : ''}
+${total.categoryChecks ? `<h2>Category check</h2><p>${total.categoryChecks.total} checks, <b class="${total.categoryChecks.wrong ? 'bad' : 'ok'}">${total.categoryChecks.wrong} wrong</b>${total.categoryChecks.noAnswer ? `, <b class="bad">${total.categoryChecks.noAnswer} no answer</b> (timeout or resolver error, not counted as wrong)` : ''}. Expected blocked: ${esc(run.options.expectBlocked || 'all categories')}.</p>
+<div class="scroll"><table><thead><tr><th>Category</th><th>Expected</th><th>Checks</th><th>Correct</th><th>No answer</th></tr></thead><tbody>${rows(([c, v]) => `<tr><td class="l">${esc(c)}</td><td>${esc(v.expected)}</td><td>${v.total}</td><td class="${v.correct < v.total ? 'bad' : 'ok'}">${v.correct}</td><td class="${v.noAnswer ? 'bad' : ''}">${v.noAnswer}</td></tr>`, Object.entries(categoryTotals(all)))}</tbody></table></div>` : ''}
 
 <!--/detail--><h2>Settings used</h2>
 <div class="scroll"><table><tbody>
@@ -368,8 +370,9 @@ function categoryTotals(cycles) {
   const out = {};
   for (const c of cycles) {
     for (const [cat, v] of Object.entries(c.summary?.blocked?.perCategory || {})) {
-      const o = (out[cat] ||= { expected: v.expected, total: 0, correct: 0 });
+      const o = (out[cat] ||= { expected: v.expected, total: 0, correct: 0, noAnswer: 0 });
       o.total += v.total;
+      o.noAnswer += v.noAnswer || 0;
       o.correct += v.expected === 'blocked' ? v.blockedOk : v.allowedOk;
     }
   }

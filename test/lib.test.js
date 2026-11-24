@@ -49,7 +49,7 @@ test('classifyBlocked: NXDOMAIN, sinkhole, real answer, mixed answer, resolver e
   assert.strictEqual(lib.classifyBlocked({ addresses: ['10.0.0.1', '1.2.3.4'] }, opts).result, 'block_failed');
   // A timeout or SERVFAIL proves nothing, so it must not pass.
   assert.match(lib.classifyBlocked({ errorCode: 'ETIMEOUT' }, opts).detail, /ETIMEOUT/);
-  assert.strictEqual(lib.classifyBlocked({ errorCode: 'ESERVFAIL' }, opts).result, 'block_failed');
+  assert.strictEqual(lib.classifyBlocked({ errorCode: 'ESERVFAIL' }, opts).result, 'no_answer');
   // Without a configured sinkhole only NXDOMAIN passes.
   assert.strictEqual(lib.classifyBlocked({ addresses: ['10.0.0.1'] }, {}).result, 'block_failed');
 });
@@ -78,7 +78,7 @@ test('summarizeBlocked: totals and per-category', () => {
     { host: 'p2', category: 'phishing', result: 'block_failed' },
   ]);
   assert.deepStrictEqual([s.total, s.blockedOk, s.blockFailed], [4, 3, 1]);
-  assert.deepStrictEqual(s.perCategory.phishing, { total: 2, blockedOk: 1, allowedOk: 0, overBlocked: 0, blockFailed: 1, expected: 'blocked' });
+  assert.deepStrictEqual(s.perCategory.phishing, { total: 2, blockedOk: 1, allowedOk: 0, overBlocked: 0, noAnswer: 0, blockFailed: 1, expected: 'blocked' });
   assert.deepStrictEqual(s.failedDomains, ['p2']);
 });
 
@@ -323,7 +323,9 @@ test('classifyBlocked with expected=allowed: normal answer passes, any block or 
   assert.strictEqual(lib.classifyBlocked({ addresses: ['1.2.3.4'] }, opts, 'allowed').result, 'allowed_ok');
   assert.strictEqual(lib.classifyBlocked({ errorCode: 'ENOTFOUND' }, opts, 'allowed').result, 'over_blocked');
   assert.strictEqual(lib.classifyBlocked({ addresses: ['10.9.9.9'] }, opts, 'allowed').result, 'over_blocked');
-  assert.strictEqual(lib.classifyBlocked({ errorCode: 'ETIMEOUT' }, opts, 'allowed').result, 'over_blocked');
+  assert.strictEqual(lib.classifyBlocked({ errorCode: 'ETIMEOUT' }, opts, 'allowed').result, 'no_answer');
+  assert.strictEqual(lib.classifyBlocked({ errorCode: 'ETIMEOUT' }, opts, 'blocked').result, 'no_answer');
+  assert.strictEqual(lib.classifyBlocked({ errorCode: 'ENOTFOUND' }, opts, 'blocked').result, 'blocked_ok');
   assert.strictEqual(lib.classifyBlocked({ addresses: ['1.2.3.4'] }, opts).result, 'block_failed'); // default unchanged
 });
 
@@ -333,11 +335,13 @@ test('summarizeBlocked counts both directions as policy misses', () => {
     { host: 'b', category: 'social', expected: 'allowed', result: 'allowed_ok' },
     { host: 'c', category: 'social', expected: 'allowed', result: 'over_blocked' },
     { host: 'd', category: 'malware', expected: 'blocked', result: 'block_failed' },
+    { host: 'e', category: 'malware', expected: 'blocked', result: 'no_answer' },
   ]);
-  assert.strictEqual(r.blockFailed, 2);
+  assert.strictEqual(r.noAnswer, 1);
+  assert.strictEqual(r.blockFailed, 3); // a timeout still fails MAX_BLOCK_FAILED (fail closed)
   assert.strictEqual(r.overBlocked, 1);
   assert.strictEqual(r.perCategory.social.expected, 'allowed');
-  assert.deepStrictEqual(r.failedDomains.sort(), ['c', 'd']);
+  assert.deepStrictEqual(r.failedDomains.sort(), ['c', 'd', 'e']);
 });
 
 test('summarizeBlocked lists each missed check with its category and detail', () => {

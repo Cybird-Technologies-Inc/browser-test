@@ -217,7 +217,7 @@ malware and phishing domains. For each lookup:
 | NXDOMAIN | blocked OK |
 | Only addresses listed in `BLOCK_PAGE_IPS` (the sinkhole) | blocked OK |
 | Any other address, or a mix of sinkhole and real addresses | **block FAILED** |
-| Timeout or SERVFAIL | **block FAILED** (the resolver proved nothing) |
+| Timeout or SERVFAIL | **no answer**: shown apart in the report, not a leak and not an over-block, but still counted in `MAX_BLOCK_FAILED` (the resolver proved nothing) |
 | Empty answer (no addresses, no error) | **block FAILED** (or `over_blocked` for an allowed category): it proves nothing |
 
 Only the IP families listed in `BLOCK_PAGE_IPS` are compared. If you list only IPv4 sinkhole
