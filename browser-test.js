@@ -988,7 +988,7 @@ async function runBlockedCheck({ host, category, run, expected = 'blocked' }) {
     if (CONFIG.blockedLookup === 'resolver') {
       // Direct query: skips the host cache, so every check reaches the resolver under test.
       const r = new dns.promises.Resolver({ timeout: CONFIG.dnsLookupTimeoutMs, tries: 1 });
-      r.setServers([CONFIG.resolverIp]);
+      r.setServers([lib.serverAddress(CONFIG)]);
       const wantV6 = CONFIG.blockPageIps.some(a => net.isIPv6(a));
       const [v4, v6] = await Promise.all([r.resolve4(host), wantV6 ? r.resolve6(host).catch(() => []) : []]);
       answer = { addresses: [...v4, ...v6] };
@@ -1035,7 +1035,7 @@ async function runDnsChecks() {
   let resolver = null;
   if (direct) {
     resolver = new dns.promises.Resolver({ timeout: CONFIG.dnsLookupTimeoutMs, tries: 1 });
-    resolver.setServers([CONFIG.resolverIp]);
+    resolver.setServers([lib.serverAddress(CONFIG)]);
   }
   const out = [];
   for (let pass = 0; pass < CONFIG.dnsRepeats; pass++) {

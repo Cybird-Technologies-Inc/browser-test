@@ -23,6 +23,20 @@ function nextOccurrence(hhmm, now = new Date()) {
   return t;
 }
 
+// A resolver is "ip" or "ip:port" (port 53 when omitted).
+function parseHostPort(raw, flag, errors) {
+  const m = /^([0-9.]+)(?::(\d{1,5}))?$/.exec(String(raw));
+  const port = m && m[2] !== undefined ? Number(m[2]) : 53;
+  if (!m || !net.isIPv4(m[1]) || port < 1 || port > 65535) {
+    errors.push(`${flag} "${raw}" is not an IPv4 address (optionally with :port, for example 203.0.113.10 or 127.0.0.1:5353).`);
+    return null;
+  }
+  return { ip: m[1], port };
+}
+
+// Lowest allowed time between cycle starts: a guard so a typo cannot hammer a live ISP resolver.
+const MIN_INTERVAL_MS = 10000;
+
 const FLAGS = {
   '--label': 'label', '--duration': 'duration', '--rounds': 'rounds', '--gap': 'gap', '--interval': 'interval',
   '--start-at': 'startAt', '--out': 'out', '--dns-domains': 'dnsDomains', '--blocked-urls': 'blockedUrls',
@@ -49,12 +63,14 @@ function parseArgs(argv) {
     }
   }
   if (o.help) return o;
+  o.target = o.ip;
   if (!o.ip) errors.push('Give the resolver IPv4 address, for example: node run.js <ip> --duration 10m --rounds 2');
-  else if (!net.isIPv4(o.ip)) errors.push(`"${o.ip}" is not an IPv4 address.`);
+  else { const hp = parseHostPort(o.ip, 'The resolver', errors); if (hp) { o.ip = hp.ip; o.port = hp.port; } }
 
   const dur = (key, flag) => { try { return parseDuration(o[key], flag); } catch (e) { errors.push(e.message); return null; } };
   o.durationMs = dur('duration', '--duration');
   o.intervalMs = dur('interval', '--interval');
+  if (o.intervalMs !== null && o.intervalMs < MIN_INTERVAL_MS) errors.push(`--interval="${o.interval}" is below the 10s minimum. Cycles closer together than that put needless load on a live resolver.`);
   o.cycleTimeoutMs = dur('cycleTimeout', '--cycle-timeout');
   // A gap of 0 is meaningful, so it is parsed on its own.
   o.gapMs = /^0+(s|m|h)?$/.test(String(o.gap)) ? 0 : dur('gap', '--gap');
@@ -67,8 +83,12 @@ function parseArgs(argv) {
     }
   }
   if (o.compare !== undefined) {
-    if (!net.isIPv4(o.compare)) errors.push(`--compare="${o.compare}" is not an IPv4 address.`);
-    else if (o.compare === o.ip) errors.push('--compare must be a different resolver from the one under test.');
+    const hp = parseHostPort(o.compare, '--compare', errors);
+    if (hp) {
+      o.compareTarget = o.compare;
+      if (hp.ip === o.ip && hp.port === o.port) errors.push('--compare must be a different resolver from the one under test.');
+      o.compare = hp.ip; o.comparePort = hp.port;
+    }
   } else if (o.compareLabel !== undefined) errors.push('--compare-label needs --compare.');
   if (o.expectBlocked && !o.blockedUrls) errors.push('--expect-blocked needs --blocked-urls (the pool the categories come from).');
   if (errors.length) { const e = new Error(`Invalid options:\n  - ${errors.join('\n  - ')}`); e.optionErrors = errors; throw e; }
@@ -82,6 +102,7 @@ function cycleEnv(o, outDir, baseEnv = process.env, who = {}) {
   const env = {
     ...baseEnv,
     RESOLVER_DNS_IP: who.ip || o.ip,
+    RESOLVER_DNS_PORT: String(who.port || o.port || 53),
     RESOLVER_LABEL: who.label || o.label || o.ip,
     PAGE_LOADS: 'false',
     OUT_DIR: outDir,
@@ -98,6 +119,29 @@ function cycleEnv(o, outDir, baseEnv = process.env, who = {}) {
     set('BLOCK_PAGE_IPS', o.blockPageIps);
   }
   return env;
+}
+
+// Why a cycle has no result. `stopping` = the user pressed Ctrl+C; `timedOut` = our own cycle timer fired.
+function cycleFailureReason({ code, signal, timedOut, stopping, timeoutMs }) {
+  if (timedOut) return `timed out after ${timeoutMs} ms (see --cycle-timeout)`;
+  if (signal) return stopping ? 'stopped by user' : `killed by signal ${signal}`;
+  if (code === 2) return 'invalid configuration; see run.log';
+  return null;
+}
+
+// Preflight: one real lookup. Only a missing answer (timeout, refused, server failure) means "cannot test from here".
+// "No such name" proves the resolver answered, so it is fine.
+function classifyPreflight(error) {
+  if (!error) return { ok: true };
+  const code = error.code || 'UNKNOWN';
+  if (['ENOTFOUND', 'ENODATA'].includes(code)) return { ok: true };
+  const hints = {
+    ETIMEOUT: 'no answer. The resolver may only answer approved networks, or the IP/port is wrong.',
+    ECONNREFUSED: 'connection refused. Nothing is listening on that IP and port.',
+    EREFUSED: 'the resolver refused the query. This network is probably not approved.',
+    ESERVFAIL: 'the resolver returned a server failure for a normal name.',
+  };
+  return { ok: false, code, hint: hints[code] || `unexpected error ${code}.` };
 }
 
 // Merge the per-cycle DNS summaries of one round (or the whole run) into combined numbers.
@@ -162,6 +206,13 @@ function chartSvg(series) {
 
 // run: { ip, label, startedAt, finishedAt, options, rounds: [{n, startedAt, finishedAt, cycles: [...]}], interrupted }
 function renderHtml(run) {
+  // A failed preflight means no cycle ran: tell the person who ran it exactly what to fix first.
+  const pf = run.preflight && run.preflight.ok === false ? run.preflight : null;
+  const preflightBanner = pf ? `<div class="alert" role="alert"><h2>Action needed: the test did not start</h2>
+<p>Resolver <b>${esc(pf.resolver)}</b> (${esc(pf.address)}) did not answer a test lookup.</p>
+<p>Reason: ${esc(pf.hint)} <span class="muted">(${esc(pf.code)})</span></p>
+<p><b>Fix before running again:</b> ask the resolver owner to approve this machine's public IP, check the IP and port, then run the same command again. No test cycles were run.</p></div>` : '';
+  const slowCycles = run.intervalMs ? run.rounds.flatMap(r => r.cycles).filter(c => c.durationMs > run.intervalMs).length : 0;
   const all = run.rounds.flatMap(r => r.cycles);
   const total = aggregate(all);
   const rows = (fn, items) => items.map(fn).join('');
@@ -192,7 +243,7 @@ function renderHtml(run) {
 body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
 main{max-width:960px;margin:0 auto;padding:24px 16px}
 h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px}
-.muted{color:var(--muted)}.bad{color:var(--bad)}.ok{color:var(--ok)}
+.alert{border:2px solid var(--bad);border-radius:8px;padding:12px 14px;margin:12px 0;background:var(--card)}.alert h2{margin:0 0 6px;color:var(--bad)}.muted{color:var(--muted)}.bad{color:var(--bad)}.ok{color:var(--ok)}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:16px 0}
 .card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
 .card b{display:block;font-size:20px}
@@ -204,7 +255,7 @@ svg{width:100%;height:auto;color:var(--muted)}svg text{fill:currentColor;font-si
 .grid{stroke:var(--line)}.line{fill:none;stroke-width:2}.line.s0{stroke:var(--accent)}.line.s1{stroke:var(--warn);stroke-dasharray:5 3}circle.s0{fill:var(--accent)}circle.s1{fill:var(--warn)}svg text.lg0{fill:var(--accent)}svg text.lg1{fill:var(--warn)}
 </style></head><body><main>
 <h1>DNS resolver test: ${esc(run.label)}</h1>
-<p class="muted">Resolver ${esc(run.ip)} · ${esc(run.startedAt)} to ${esc(run.finishedAt)}${run.interrupted ? ' · <b class="bad">stopped early</b>' : ''}</p>
+${preflightBanner}<p class="muted">Resolver ${esc(run.ip)} · ${esc(run.startedAt)} to ${esc(run.finishedAt)} (UTC)${run.interrupted ? ' · <b class="bad">stopped early</b>' : ''}</p>
 
 <div class="cards">
 <div class="card">Cycles<b>${total.cycles}${total.cyclesFailed ? ` <span class="bad">(${total.cyclesFailed} failed)</span>` : ''}</b></div>
@@ -212,6 +263,7 @@ svg{width:100%;height:auto;color:var(--muted)}svg text{fill:currentColor;font-si
 <div class="card">Failed lookups<b class="${total.failed ? 'bad' : 'ok'}">${total.failed} (${(total.failureRate * 100).toFixed(1)}%)</b></div>
 <div class="card">First lookup P95, median of cycles<b>${ms(total.firstP95.median)} ms</b></div>
 <div class="card">Repeat lookup P95, median of cycles<b>${ms(total.repeatP95.median)} ms</b></div>
+<div class="card">Cycle 1 first P95 (closest to a cold start)<b>${ms(firstP95(all[0]))} ms${cmp ? ` <span class="muted">vs ${ms(firstP95(refCycles[0]))}</span>` : ''}</b></div>
 ${cmp ? `<div class="card">Reference (${esc(run.compare.label)}) first P95, median<b>${ms(refTotal.firstP95.median)} ms</b></div>
 <div class="card">Difference in first P95, median (positive = slower than reference)<b class="${medianDelta > 0 ? 'bad' : 'ok'}">${medianDelta === null ? '–' : (medianDelta > 0 ? '+' : '') + medianDelta} ms</b></div>
 <div class="card">Cycles slower than reference<b>${slower} of ${deltas.length}</b></div>
@@ -219,8 +271,9 @@ ${cmp ? `<div class="card">Reference (${esc(run.compare.label)}) first P95, medi
 </div>
 ${cmp ? `<p class="muted">Comparison: each cycle asks ${esc(run.ip)} and then ${esc(run.compare.ip)} (${esc(run.compare.label)}) for the same names. A reference answer is a cache hit or miss on that resolver's own side, so it shows what a typical public resolver does, not a fixed baseline.</p>` : ''}
 
+${slowCycles ? `<p class="alert">${slowCycles} cycle(s) took longer than the ${Math.round(run.intervalMs / 1000)} s interval, so they ran back to back and put more load on the resolver than planned.</p>` : ''}
 <h2>How to read this</h2>
-<p class="muted">A <b>first</b> lookup is the first time a cycle asks for a name. It shows the resolver's own answering time, and is slow when the name is not cached. A <b>repeat</b> lookup asks the same name again straight after, so it shows the cache. P95 means 95 out of 100 lookups were at least this fast. Ranges below are min / median / max across cycles, in milliseconds.</p>
+<p class="muted">A <b>first</b> lookup is the first time a cycle asks for a name. It shows the resolver's own answering time, and is slow when the name is not cached. The same names are asked in every cycle, so after cycle 1 the resolver may already hold them: later first lookups can look faster than a true cold lookup, and cycle 1 is the best cold-start figure. A <b>repeat</b> lookup asks the same name again straight after, so it shows the cache. P95 means 95 out of 100 lookups were at least this fast. Ranges below are min / median / max across cycles, in milliseconds.</p>
 
 <h2>First-lookup P95 per cycle (ms)</h2>
 ${chartSvg(series)}
@@ -232,7 +285,7 @@ ${rows(r => { const a = aggregate(r.cycles); const ra = cmp ? aggregate(r.cycles
 </tbody></table></div>
 
 <h2>Per cycle</h2>
-<div class="scroll"><table><thead><tr><th>Round</th><th>Cycle</th><th>Started</th><th>Seed</th><th>Lookups</th><th>Failed</th><th>First P50</th><th>First P95</th><th>Repeat P95</th><th>Result</th>${cmp ? '<th>Ref first P95</th><th>Ref failed</th><th>Difference</th>' : ''}</tr></thead><tbody>
+<div class="scroll"><table><thead><tr><th>Round</th><th>Cycle</th><th>Started (UTC)</th><th>Seed</th><th>Lookups</th><th>Failed</th><th>First P50</th><th>First P95</th><th>Repeat P95</th><th>Result</th>${cmp ? '<th>Ref first P95</th><th>Ref failed</th><th>Difference</th>' : ''}</tr></thead><tbody>
 ${rows(c => { const d = c.summary?.dnsChecks; return `<tr><td>${c.round}</td><td>${c.cycle}</td><td class="l">${esc(c.startedAt)}</td><td>${esc(c.summary?.config?.randomSeed ?? '–')}</td><td>${d ? d.total : '–'}</td><td class="${d?.failed ? 'bad' : ''}">${d ? d.failed : '–'}</td><td>${ms(d?.first?.p50)}</td><td>${ms(d?.first?.p95)}</td><td>${ms(d?.repeat?.p95)}</td><td class="l ${d ? 'ok' : 'bad'}">${d ? 'ok' : esc(c.error || 'no result')}</td>${cmp ? refCells(c) : ''}</tr>`; }, all)}
 </tbody></table></div>
 
@@ -262,4 +315,4 @@ function categoryTotals(cycles) {
   return out;
 }
 
-module.exports = { parseDuration, nextOccurrence, parseArgs, cycleEnv, aggregate, renderHtml, categoryTotals };
+module.exports = { MIN_INTERVAL_MS, parseHostPort, cycleFailureReason, classifyPreflight, parseDuration, nextOccurrence, parseArgs, cycleEnv, aggregate, renderHtml, categoryTotals };

@@ -15,6 +15,18 @@ node run.js <resolver-ip> --duration 10m --rounds 2
 Run it from a network the resolver approves. The resolver answers only approved networks,
 so from any other network every lookup shows as failed. No browser download is needed for this mode (`npm ci` is enough).
 
+### Before the test starts
+
+Before any cycle, `run.js` sends one real lookup to the resolver (and to the `--compare` resolver). If it gets
+no answer, the test does **not** start. You get:
+
+- a red **ACTION NEEDED BEFORE THE TEST CAN START** box in the terminal, naming the resolver and the reason;
+- the same message as a banner at the top of `report.html`;
+- exit code `3`.
+
+Typical cause: the resolver only answers approved networks and this machine's public IP is not approved yet.
+Ask the resolver owner to approve it, then run the same command again. A "no such name" answer counts as a reply.
+
 ### What it does
 
 - A **cycle** asks the resolver for a list of names directly (the machine's own DNS and cache are not used). The first time a cycle asks for a name is the **first lookup**; the next asks are **repeat lookups**, which hit the resolver's cache.
@@ -38,14 +50,14 @@ so from any other network every lookup shows as failed. No browser download is n
 
 | Option | Default | Meaning |
 |--------|---------|---------|
-| `<resolver-ip>` | required | IPv4 address of the resolver to test |
+| `<resolver-ip>` | required | IPv4 address of the resolver to test, optionally with a port (`203.0.113.10` or `127.0.0.1:5353`; port 53 if omitted) |
 | `--duration` | `10m` | Length of each round. Units `s`, `m`, `h` (a unit is required) |
 | `--rounds` | `1` | Number of rounds (1 to 100) |
 | `--gap` | `0s` | Pause between rounds |
-| `--interval` | `60s` | Time between cycle starts inside a round. Keeps load on the resolver gentle |
+| `--interval` | `60s` | Time between cycle starts inside a round. Minimum `10s`, to keep load on a live resolver gentle |
 | `--start-at HH:MM` | start now | Wait for this local time; if it has passed today, tomorrow |
 | `--label` | the IP | Name shown in the report |
-| `--compare IP` | none | Also test this reference resolver each cycle, with the same names (same seed), and show both side by side. Must differ from the resolver under test |
+| `--compare IP[:port]` | none | Also test this reference resolver each cycle, with the same names (same seed), and show both side by side. Must differ from the resolver under test |
 | `--compare-label` | its IP | Name of the reference in the report |
 | `--dns-domains` | `profiles/pool-dns.txt` | Names to time: a file (one per line, `#` comments) or a comma list |
 | `--sample-dns N` | all | Use N random names from the list each cycle |
@@ -78,6 +90,11 @@ resolver's own cache, so it shows what a typical public resolver does, not a fix
 
 ### Reading the report
 
+The same names are asked in every cycle, so after cycle 1 the resolver may already hold them in cache. Later
+"first" lookups can then look faster than a true cold lookup. The report shows **cycle 1's first P95** as its own
+figure: it is the closest to a cold start. All times in the report are UTC; `--start-at` uses this machine's local time
+and prints both when the run starts.
+
 | Part | Meaning |
 |------|---------|
 | Cards | Cycles, lookups, failed lookups, median first and repeat P95 (and the reference and difference with `--compare`) |
@@ -89,6 +106,14 @@ resolver's own cache, so it shows what a typical public resolver does, not a fix
 
 P95 means 95 out of 100 lookups were at least this fast. A big gap between first and repeat P95 means
 cache misses are slow. A failed cycle (a timeout or crash) is listed with its reason, never hidden.
+
+### Exit codes of `run.js`
+
+| Code | Meaning |
+|------|---------|
+| `0` | The run finished (even if some lookups failed: read the report) |
+| `2` | Bad option, bad name list, missing file, or the `--out` folder already holds a run |
+| `3` | Preflight failed: a resolver did not answer. Action needed before the test (see above) |
 
 ### Output files
 
@@ -150,6 +175,7 @@ Every variable is optional. Defaults equal the old hardcoded values.
 | `BLOCKED_URLS` | unset | Domains the resolver should block, as `category=domain` entries (comma list, or a file). See below |
 | `MAX_BLOCK_FAILED` | unset | Fail if more than this many blocked domains were answered. Use `0` whenever `BLOCKED_URLS` is set |
 | `EXPECT_BLOCKED_CATEGORIES` | unset | Categories switched ON in the resolver's panel: `all`, `none` or a comma list. Names in them must be blocked, names in every other category must resolve normally. Unset = all expected blocked |
+| `RESOLVER_DNS_PORT` | `53` | Port of `RESOLVER_DNS_IP` (for a resolver on another port, or a local test server) |
 | `PAGE_LOADS` | `true` | `false` = DNS-only run: no page is opened and no browser starts (what `run.js` sets) |
 | `SAMPLE_URLS` / `SAMPLE_BLOCKED` / `SAMPLE_DNS` | unset | Random real-user mix: use this many from the `URLS` / `DNS_DOMAINS` pool, or this many per category from the `BLOCKED_URLS` pool. Unset = use all |
 | `RANDOM_SEED` | random | Seed for the mix. It is logged and written to `summary.json`, so a run can be replayed |
@@ -304,7 +330,7 @@ Requires Node 22 or newer (`nvm use` reads `.nvmrc`).
 | Guard | Where | What it stops |
 |-------|-------|---------------|
 | Pre-commit hook | `.githooks/pre-commit` | Secrets, result files and archives in a commit; syntax errors; failing tests |
-| CI | `.github/workflows/ci.yml` | Same checks plus `npm audit` and a gitleaks secret scan, on every PR |
+| CI | `.github/workflows/ci.yml` | Same checks plus `npm audit` and a gitleaks secret scan, on every PR. The `secret-scan` job needs the repository secret `GITLEAKS_LICENSE` (a Cybird admin sets it in the repo's Actions secrets); without it that job fails. |
 | `.gitignore` | repo root | Results (`*.csv`, `out/`), archives, `.env`, `node_modules` |
 | Dependabot | `.github/dependabot.yml` | Outdated npm packages and GitHub Actions |
 | Claude Code settings | `.claude/settings.json` | Blocks `git push`, PR creation and reading `.env` without approval |

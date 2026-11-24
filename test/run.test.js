@@ -140,3 +140,51 @@ test('renderHtml without a reference has no comparison parts', () => {
   const html = r.renderHtml({ ip: '1.2.3.4', label: 'T', compare: null, startedAt: 's', finishedAt: 'f', interrupted: false, options: {}, rounds: [{ n: 1, cycles: [cyc(1, 1, 100, 3)] }] });
   assert.ok(!html.includes('Reference'));
 });
+
+test('parseHostPort and ip:port for the resolver and the reference', () => {
+  assert.deepStrictEqual(r.parseHostPort('1.2.3.4', 'x', []), { ip: '1.2.3.4', port: 53 });
+  assert.deepStrictEqual(r.parseHostPort('127.0.0.1:5353', 'x', []), { ip: '127.0.0.1', port: 5353 });
+  for (const bad of ['1.2.3', 'a.b.c.d', '1.2.3.4:0', '1.2.3.4:70000', '1.2.3.4:x', '1.2.3.4:53:1']) { const e = []; assert.strictEqual(r.parseHostPort(bad, 'x', e), null, bad); assert.strictEqual(e.length, 1); }
+  const o = r.parseArgs(['1.2.3.4:5300', '--compare', '1.2.3.4:5301']);
+  assert.deepStrictEqual([o.ip, o.port, o.compare, o.comparePort], ['1.2.3.4', 5300, '1.2.3.4', 5301]);
+  assert.throws(() => r.parseArgs(['1.2.3.4:5300', '--compare', '1.2.3.4:5300']), /different resolver/);
+  assert.strictEqual(r.cycleEnv(o, '/x', {}, { ip: o.compare, port: o.comparePort, reference: true }).RESOLVER_DNS_PORT, '5301');
+  assert.strictEqual(r.cycleEnv(r.parseArgs(['1.2.3.4']), '/x', {}).RESOLVER_DNS_PORT, '53');
+});
+
+test('RESOLVER_DNS_PORT: default 53, range checked, serverAddress formats ip:port', () => {
+  assert.strictEqual(lib.loadConfig({}, fs).resolverPort, 53);
+  assert.strictEqual(lib.loadConfig({ RESOLVER_DNS_PORT: '5353' }, fs).resolverPort, 5353);
+  for (const bad of ['0', '70000', 'x', '53.5']) assert.throws(() => lib.loadConfig({ RESOLVER_DNS_PORT: bad }, fs), /RESOLVER_DNS_PORT/);
+  assert.strictEqual(lib.serverAddress({ resolverIp: '1.2.3.4', resolverPort: 53 }), '1.2.3.4');
+  assert.strictEqual(lib.serverAddress({ resolverIp: '1.2.3.4', resolverPort: 5353 }), '1.2.3.4:5353');
+});
+
+test('--interval has a 10 s floor', () => {
+  assert.throws(() => r.parseArgs(['1.2.3.4', '--interval', '5s']), /10s minimum/);
+  assert.strictEqual(r.parseArgs(['1.2.3.4', '--interval', '10s']).intervalMs, 10000);
+});
+
+test('cycleFailureReason: timeout, user stop and other signals are told apart', () => {
+  assert.match(r.cycleFailureReason({ timedOut: true, signal: 'SIGKILL', timeoutMs: 1000 }), /timed out after 1000 ms/);
+  assert.strictEqual(r.cycleFailureReason({ signal: 'SIGTERM', stopping: true }), 'stopped by user');
+  assert.match(r.cycleFailureReason({ signal: 'SIGSEGV' }), /SIGSEGV/);
+  assert.match(r.cycleFailureReason({ code: 2 }), /invalid configuration/);
+  assert.strictEqual(r.cycleFailureReason({ code: 0 }), null);
+});
+
+test('classifyPreflight: only a missing answer needs action; "no such name" proves the resolver answered', () => {
+  assert.strictEqual(r.classifyPreflight(null).ok, true);
+  assert.strictEqual(r.classifyPreflight({ code: 'ENOTFOUND' }).ok, true);
+  for (const code of ['ETIMEOUT', 'EREFUSED', 'ECONNREFUSED', 'ESERVFAIL', 'WEIRD']) { const x = r.classifyPreflight({ code }); assert.strictEqual(x.ok, false); assert.ok(x.hint); }
+});
+
+test('renderHtml: failed preflight shows an alert; slow cycles are called out', () => {
+  const base = { ip: '1.2.3.4', label: 'T', compare: null, startedAt: 's', finishedAt: 'f', interrupted: false, options: {}, rounds: [] };
+  const pf = r.renderHtml({ ...base, preflight: { ok: false, resolver: 'T', address: '1.2.3.4:53', code: 'ETIMEOUT', hint: 'no answer.' } });
+  assert.ok(pf.includes('Action needed: the test did not start') && pf.includes('role="alert"'));
+  const slow = cyc(1, 1, 100, 3); slow.durationMs = 90000;
+  const html = r.renderHtml({ ...base, intervalMs: 60000, rounds: [{ n: 1, cycles: [slow] }] });
+  assert.ok(html.includes('took longer than the 60 s interval'));
+  assert.ok(!r.renderHtml({ ...base, rounds: [] }).includes('Action needed'));
+});

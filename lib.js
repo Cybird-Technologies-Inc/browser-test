@@ -255,6 +255,8 @@ function loadConfig(env, fsLike) {
     blockedLookup: lookupMode,
     dnsCheckLookup: dnsCheckMode,
     resolverIp,
+    // Port the resolver listens on. 53 unless the resolver runs elsewhere (or a test uses a local fake).
+    resolverPort: num('RESOLVER_DNS_PORT', 53, { min: 1, max: 65535, integer: true }),
     blockPageIps: (env.BLOCK_PAGE_IPS || '').split(',').map(s => s.trim()).filter(Boolean),
     repeats: num('REPEATS', 1, { min: 1, integer: true }),
     concurrency: num('CONCURRENCY', 1, { min: 1, max: 50, integer: true }),
@@ -334,6 +336,11 @@ function classifyBlocked({ addresses = [], errorCode = null }, { blockPageIps = 
 // ------------------------------------------------------------------
 
 // Four decimals: 1/3 must not be rounded to 0.33 before a threshold compares it.
+// What dns.Resolver.setServers wants: a bare IP for port 53, else ip:port.
+function serverAddress({ resolverIp, resolverPort = 53 }) {
+  return resolverPort === 53 ? resolverIp : `${resolverIp}:${resolverPort}`;
+}
+
 function rate(part, total) {
   return total ? Math.round((part / total) * 1e4) / 1e4 : 0;
 }
@@ -627,7 +634,7 @@ module.exports = {
   maxOf, rampInconclusive,
   loadLoadConfig, summarizeLoadStep, findDegradation, LOAD_HARD_MAX_CONCURRENCY, LOAD_HARD_MAX_QPS,
   makeRng, sampleItems,
-  DEFAULT_URLS, parseBlockedList, round, phase, percentile, average, hostnameFromUrl, csvEscape, dnsBuckets,
+  DEFAULT_URLS, serverAddress, parseBlockedList, round, phase, percentile, average, hostnameFromUrl, csvEscape, dnsBuckets,
   loadConfig, parseUrlList, classifyBlocked, rate, dnsStats, summarizeResults, summarizeBlocked, checkThresholds, isHttpFailure, withTimeout,
   compareRuns, classifyFailure, summarizeFailures, summarizeDnsChecks, parseDomainList,
 };
