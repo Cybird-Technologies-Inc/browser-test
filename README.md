@@ -12,6 +12,8 @@ node run.js <resolver-ip> --duration 10m --rounds 2
 # then open out/run-<timestamp>/report.html in a browser
 ```
 
+Copy-paste commands for a standard run, a smoke test and the malware/phishing check are in [docs/RUN_GUIDE.md](docs/RUN_GUIDE.md). The work tracker is [docs/IMPROVEMENT_PLAN.md](docs/IMPROVEMENT_PLAN.md).
+
 Run it from a network the resolver approves. The resolver answers only approved networks,
 so from any other network every lookup shows as failed. No browser download is needed for this mode (`npm ci` is enough).
 
