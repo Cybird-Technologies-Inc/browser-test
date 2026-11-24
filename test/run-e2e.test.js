@@ -59,8 +59,9 @@ test('2 rounds with --compare: results, reference columns, NXDOMAIN counted as f
     assert.strictEqual(c.summary.dnsChecks.total, 4);
     assert.strictEqual(c.summary.dnsChecks.failed, 2);                    // bad.example, both passes
     assert.ok(c.ref.summary.dnsChecks.first.p95 !== null);
+    assert.deepStrictEqual(c.summary.dnsChecks.slowest.map(x => x.host), ['ok.example']);   // answered names only
     const html = fs.readFileSync(path.join(out, 'report.html'), 'utf8');
-    for (const t of ['ref (reference)', 'bad.example (ENOTFOUND)', 'Cycle 1 first P95', '(UTC)']) assert.ok(html.includes(t), t);
+    for (const t of ['ref (reference)', 'bad.example (ENOTFOUND)', 'Cycle 1 first P95', '(UTC)', 'Slowest names on tgt']) assert.ok(html.includes(t), t);
   } finally { await a.close(); await b.close(); rm(out); }
 });
 

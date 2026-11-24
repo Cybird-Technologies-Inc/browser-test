@@ -196,6 +196,10 @@ test('DNS check split: first vs repeat, and DNS_CHECK_LOOKUP default and validat
   const one = lib.summarizeDnsChecks([{ host: 'a.example', ok: true, ms: 5 }]);
   assert.strictEqual(one.repeat, null);
   assert.strictEqual(one.first.total, 1);
+  // slowest: first lookups only, answered only, slowest first, at most 5.
+  assert.deepStrictEqual(d.slowest, [{ host: 'a.example', ms: 300 }]);
+  const many = lib.summarizeDnsChecks(Array.from({ length: 8 }, (_, i) => ({ host: `n${i}.example`, pass: 0, ok: true, ms: i * 10 })));
+  assert.deepStrictEqual(many.slowest.map(x => x.host), ['n7.example', 'n6.example', 'n5.example', 'n4.example', 'n3.example']);
   assert.strictEqual(lib.loadConfig({}, noFs).dnsCheckLookup, 'system');
   assert.strictEqual(lib.loadConfig({ RESOLVER_DNS_IP: '192.0.2.1' }, noFs).dnsCheckLookup, 'resolver');
   assert.strictEqual(lib.loadConfig({ RESOLVER_DNS_IP: '192.0.2.1', DNS_CHECK_LOOKUP: 'system' }, noFs).dnsCheckLookup, 'system');

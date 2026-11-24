@@ -160,6 +160,12 @@ function aggregate(cycles) {
   const blocked = ok.map(c => c.summary.blocked).filter(Boolean);
   const failedDomains = {};
   for (const c of ok) for (const d of c.summary.dnsChecks.failedDomains || []) failedDomains[d] = (failedDomains[d] || 0) + 1;
+  // Names that were among a cycle's slowest first lookups: how often, typical and worst time.
+  const byName = {};
+  for (const c of ok) for (const x of c.summary.dnsChecks.slowest || []) (byName[x.host] ||= []).push(x.ms);
+  const slowestNames = Object.entries(byName)
+    .map(([host, v]) => ({ host, cycles: v.length, median: lib.percentile(v, 0.5), worst: Math.max(...v) }))
+    .sort((a, b) => b.median - a.median || b.cycles - a.cycles).slice(0, 8);
   return {
     cycles: cycles.length,
     cyclesFailed: cycles.length - ok.length,
@@ -170,6 +176,7 @@ function aggregate(cycles) {
     firstP95: stat(pick('first', 'p95')),
     repeatP95: stat(pick('repeat', 'p95')),
     failedDomains,
+    slowestNames,
     categoryChecks: blocked.some(b => b.total > 0) ? {
       total: blocked.reduce((n, b) => n + b.total, 0),
       wrong: blocked.reduce((n, b) => n + b.blockFailed, 0),
@@ -315,8 +322,17 @@ ${rows(([k, v]) => `<tr><td class="l">${esc(k)}</td><td class="l">${esc(v)}</td>
 `;
 }
 
+// A gap this small is noise from one window, so the sentence calls it the same.
+const SAME_WITHIN_MS = 20;
+
 // Side-by-side summary of the resolver under test and the reference. Facts only: no verdict word, because
 // one window from one network is not enough to call a resolver good or bad.
+function slowTable(title, x) {
+  if (!x.slowestNames.length) return '';
+  return `<h3>Slowest names on ${esc(title)}</h3>
+<div class="scroll"><table><thead><tr><th class="l">Name</th><th>Cycles in its 5 slowest</th><th>Median first lookup (ms)</th><th>Worst (ms)</th></tr></thead><tbody>${x.slowestNames.map(n => `<tr><td class="l">${esc(n.host)}</td><td>${n.cycles}</td><td>${n.median}</td><td>${n.worst}</td></tr>`).join('')}</tbody></table></div>`;
+}
+
 function comparisonSection(run, a, b, medianDelta, slower, compared, cold, warm) {
   const range = x => `${ms(x.min)} / ${ms(x.median)} / ${ms(x.max)}`;
   const fmt = v => (v === null || v === undefined ? '–' : `${v}`);
@@ -325,8 +341,9 @@ function comparisonSection(run, a, b, medianDelta, slower, compared, cold, warm)
   const row = (label, va, vb) => `<tr><td class="l">${label}</td><td>${va}</td><td>${vb}</td></tr>`;
   let sentence = 'There were no cycles with a reading from both resolvers, so no difference can be shown.';
   if (medianDelta !== null) {
-    const dir = medianDelta > 0 ? 'higher (slower)' : medianDelta < 0 ? 'lower (faster)' : 'the same';
-    sentence = `On first lookups the median P95 of ${esc(run.label)} is ${fmt(a.firstP95.median)} ms and of ${esc(run.compare.label)} is ${fmt(b.firstP95.median)} ms: ${medianDelta === 0 ? dir : `${Math.abs(medianDelta)} ms ${dir}`} for ${esc(run.label)}. ${esc(run.label)} was slower in ${slower} of ${compared} cycles. Failed lookups: ${a.failed} of ${a.lookups} (${pct(a)}) against ${b.failed} of ${b.lookups} (${pct(b)}).`;
+    const same = Math.abs(medianDelta) <= SAME_WITHIN_MS;
+    const dir = same ? `about the same (within ${SAME_WITHIN_MS} ms)` : medianDelta > 0 ? 'higher (slower)' : 'lower (faster)';
+    sentence = `On first lookups the median P95 of ${esc(run.label)} is ${fmt(a.firstP95.median)} ms and of ${esc(run.compare.label)} is ${fmt(b.firstP95.median)} ms: ${same ? `${Math.abs(medianDelta)} ms, ${dir}` : `${Math.abs(medianDelta)} ms ${dir} for ${esc(run.label)}`}. ${esc(run.label)} was slower in ${slower} of ${compared} cycles. Failed lookups: ${a.failed} of ${a.lookups} (${pct(a)}) against ${b.failed} of ${b.lookups} (${pct(b)}).`;
   }
   return `<h2>Resolver comparison</h2>
 <p>${sentence}</p>
@@ -341,6 +358,7 @@ ${row('First lookup P95 (min / med / max, ms)', range(a.firstP95), range(b.first
 ${row('Repeat lookup P95 (min / med / max, ms)', range(a.repeatP95), range(b.repeatP95))}
 ${row('Names that failed (cycles affected)', names(a), names(b))}
 </tbody></table></div>
+${slowTable(run.label, a)}${slowTable(`${run.compare.label} (reference)`, b)}
 <p class="muted">Based on this window from this network only. Repeat the run at another time before drawing a conclusion.</p>`;
 }
 

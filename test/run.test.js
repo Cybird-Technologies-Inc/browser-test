@@ -138,6 +138,17 @@ test('renderHtml with a reference shows both lines, the difference and survives 
   for (const t of ['Resolver comparison', '150 ms higher (slower) for T', 'Pub (reference)</th>', 'Names that failed (cycles affected)', 'Repeat the run at another time']) assert.ok(html.includes(t), t);
 });
 
+test('comparison: slowest names are listed per resolver, and a gap within 20 ms is called the same', () => {
+  const mk = (ms, slow) => { const c = cyc(1, 1, ms, 3); c.summary.dnsChecks.slowest = slow; return c; };
+  const a = mk(110, [{ host: 'slow.example', ms: 900 }, { host: '<b>x</b>.example', ms: 50 }]); a.ref = mk(100, [{ host: 'ref-slow.example', ms: 70 }]);
+  const html = r.renderHtml({ ip: '1.2.3.4', label: 'T', compare: { ip: '8.8.8.8', label: 'Pub' }, startedAt: 's', finishedAt: 'f', interrupted: false, options: {}, rounds: [{ n: 1, cycles: [a] }] });
+  for (const t of ['Slowest names on T', 'Slowest names on Pub (reference)', 'slow.example', 'ref-slow.example', 'about the same (within 20 ms)']) assert.ok(html.includes(t), t);
+  assert.ok(!html.includes('<b>x</b>'), 'hostile name is escaped');
+  // A results.json from before this field existed still renders, without the tables.
+  const old = cyc(1, 1, 100, 3); old.ref = cyc(1, 1, 100, 3);
+  assert.ok(!r.renderHtml({ ip: '1.2.3.4', label: 'T', compare: { ip: '8.8.8.8', label: 'Pub' }, startedAt: 's', finishedAt: 'f', interrupted: false, options: {}, rounds: [{ n: 1, cycles: [old] }] }).includes('Slowest names'));
+});
+
 test('renderHtml with a reference where no cycle has both readings does not invent a difference', () => {
   const a = cyc(1, 1, 200, 3); a.ref = { summary: null, error: 'killed' };
   const html = r.renderHtml({ ip: '1.2.3.4', label: 'T', compare: { ip: '8.8.8.8', label: 'Pub' }, startedAt: 's', finishedAt: 'f', interrupted: false, options: {}, rounds: [{ n: 1, cycles: [a] }] });

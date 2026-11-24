@@ -520,6 +520,8 @@ function summarizeDnsChecks(results) {
   return {
     ...dnsCheckStats(results),
     failedDomains: [...new Set(results.filter(r => !r.ok).map(r => `${r.host} (${r.errorCode})`))],
+    // The 5 slowest first lookups that got an answer, so a report can name the names behind a high P95.
+    slowest: first.filter(r => r.ok).sort((a, b) => b.ms - a.ms).slice(0, 5).map(r => ({ host: r.host, ms: round(r.ms) })),
     first: dnsCheckStats(first),
     repeat: repeat.length ? dnsCheckStats(repeat) : null,
   };
